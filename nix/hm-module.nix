@@ -67,7 +67,9 @@ in {
           "HOARD_AGENT_PASSWORD_FILE=${cfg.passwordFile}"
         ] ++ lib.optional (cfg.host != "") "HOARD_AGENT_HOST=${cfg.host}";
         ExecStart = "${lib.getExe cfg.package} -listen ${cfg.listen} -restic ${lib.getExe cfg.restic}";
-        Restart = "on-failure";
+        # "always" (not "on-failure") so the agent comes back even after a clean
+        # kill; an explicit `systemctl --user stop` still stops it for good.
+        Restart = "always";
         RestartSec = 5;
       };
       Install.WantedBy = [ "default.target" ];
