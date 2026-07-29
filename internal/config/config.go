@@ -127,29 +127,33 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
-// applyEnv lets secrets be injected without writing them to disk. This is the
-// recommended path for a TrueNAS app: set these in the app's env vars.
+// applyEnv SEEDS empty fields from the environment (a fresh TrueNAS deploy can
+// supply the initial secrets / storage config there) but does not override
+// values already present in the config file. The config file — editable from
+// the Settings panel — is the source of truth, so a change made in the GUI
+// isn't reverted on restart. ListenAddr always follows env if set (it's a
+// deploy concern, not a GUI setting).
 func (c *Config) applyEnv() {
 	if v := os.Getenv("HOARD_LISTEN_ADDR"); v != "" {
 		c.ListenAddr = v
 	}
-	if v := os.Getenv("HOARD_HOT_PASSWORD"); v != "" {
-		c.Hot.Password = v
+	if c.Hot.Password == "" {
+		c.Hot.Password = os.Getenv("HOARD_HOT_PASSWORD")
 	}
-	if v := os.Getenv("HOARD_COLD_REPOSITORY"); v != "" {
-		c.Cold.Repository = v
+	if c.Cold.Repository == "" {
+		c.Cold.Repository = os.Getenv("HOARD_COLD_REPOSITORY")
 	}
-	if v := os.Getenv("HOARD_COLD_PASSWORD"); v != "" {
-		c.Cold.Password = v
+	if c.Cold.Password == "" {
+		c.Cold.Password = os.Getenv("HOARD_COLD_PASSWORD")
 	}
-	if v := os.Getenv("HOARD_COLD_S3_ACCESS_KEY_ID"); v != "" {
-		c.Cold.S3AccessKeyID = v
+	if c.Cold.S3AccessKeyID == "" {
+		c.Cold.S3AccessKeyID = os.Getenv("HOARD_COLD_S3_ACCESS_KEY_ID")
 	}
-	if v := os.Getenv("HOARD_COLD_S3_SECRET_ACCESS_KEY"); v != "" {
-		c.Cold.S3SecretAccessKey = v
+	if c.Cold.S3SecretAccessKey == "" {
+		c.Cold.S3SecretAccessKey = os.Getenv("HOARD_COLD_S3_SECRET_ACCESS_KEY")
 	}
-	if v := os.Getenv("HOARD_ALERT_WEBHOOK_URL"); v != "" {
-		c.Alert.WebhookURL = v
+	if c.Alert.WebhookURL == "" {
+		c.Alert.WebhookURL = os.Getenv("HOARD_ALERT_WEBHOOK_URL")
 	}
 }
 

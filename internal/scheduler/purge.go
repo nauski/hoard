@@ -36,18 +36,18 @@ func (s *Scheduler) PurgePath(ctx context.Context, host, targetPath string) erro
 	}
 
 	// Hot first (the source of truth), then cold (e2).
-	_ = s.hot.Unlock(ctx)
-	if err := run("rewrite hot", func() (string, error) { return s.hot.RewriteExcludePath(ctx, host, targetPath) }); err != nil {
+	_ = s.hotC().Unlock(ctx)
+	if err := run("rewrite hot", func() (string, error) { return s.hotC().RewriteExcludePath(ctx, host, targetPath) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "hot rewrite failed")
 	}
-	if err := run("prune hot", func() (string, error) { return s.hot.Prune(ctx) }); err != nil {
+	if err := run("prune hot", func() (string, error) { return s.hotC().Prune(ctx) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "hot prune failed")
 	}
-	_ = s.cold.Unlock(ctx)
-	if err := run("rewrite cold(e2)", func() (string, error) { return s.cold.RewriteExcludePath(ctx, host, targetPath) }); err != nil {
+	_ = s.coldC().Unlock(ctx)
+	if err := run("rewrite cold(e2)", func() (string, error) { return s.coldC().RewriteExcludePath(ctx, host, targetPath) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "cold rewrite failed")
 	}
-	if err := run("prune cold(e2)", func() (string, error) { return s.cold.Prune(ctx) }); err != nil {
+	if err := run("prune cold(e2)", func() (string, error) { return s.coldC().Prune(ctx) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "cold prune failed")
 	}
 
@@ -73,7 +73,7 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 	var b strings.Builder
 
 	// Look up host+time to find the cold twin.
-	hotSnaps, err := s.hot.Snapshots(ctx)
+	hotSnaps, err := s.hotC().Snapshots(ctx)
 	if err != nil {
 		return s.finishPurge(start, "", err, "list hot snapshots failed")
 	}
@@ -86,25 +86,25 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 		}
 	}
 
-	_ = s.hot.Unlock(ctx)
-	out, err := s.hot.RewriteExcludePathSnap(ctx, hotSnapID, targetPath)
+	_ = s.hotC().Unlock(ctx)
+	out, err := s.hotC().RewriteExcludePathSnap(ctx, hotSnapID, targetPath)
 	fmt.Fprintf(&b, "== rewrite hot version ==\n%s\n", strings.TrimSpace(out))
 	if err != nil {
 		return s.finishPurge(start, b.String(), err, "hot rewrite failed")
 	}
-	if _, err := s.hot.Prune(ctx); err != nil {
+	if _, err := s.hotC().Prune(ctx); err != nil {
 		fmt.Fprintf(&b, "prune hot error: %v\n", err)
 	}
 
 	if !when.IsZero() {
-		if coldSnaps, err := s.cold.Snapshots(ctx); err == nil {
+		if coldSnaps, err := s.coldC().Snapshots(ctx); err == nil {
 			for _, cs := range coldSnaps {
 				if cs.Hostname == host && cs.Time.Equal(when) {
-					_ = s.cold.Unlock(ctx)
-					o, e := s.cold.RewriteExcludePathSnap(ctx, cs.ID, targetPath)
+					_ = s.coldC().Unlock(ctx)
+					o, e := s.coldC().RewriteExcludePathSnap(ctx, cs.ID, targetPath)
 					fmt.Fprintf(&b, "== rewrite cold twin %s ==\n%s\n", cs.ShortID, strings.TrimSpace(o))
 					if e == nil {
-						_, _ = s.cold.Prune(ctx)
+						_, _ = s.coldC().Prune(ctx)
 					}
 					break
 				}
@@ -131,7 +131,7 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 	var b strings.Builder
 
 	// Identify the hot snapshot so we can find its cold twin by host+time.
-	hotSnaps, err := s.hot.Snapshots(ctx)
+	hotSnaps, err := s.hotC().Snapshots(ctx)
 	if err != nil {
 		return s.finishDelete(start, "", err, "list hot snapshots failed")
 	}
@@ -149,26 +149,26 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 		}
 	}
 
-	_ = s.hot.Unlock(ctx)
-	out, err := s.hot.ForgetSnapshot(ctx, hotSnapID)
+	_ = s.hotC().Unlock(ctx)
+	out, err := s.hotC().ForgetSnapshot(ctx, hotSnapID)
 	fmt.Fprintf(&b, "== forget hot ==\n%s\n", strings.TrimSpace(out))
 	if err != nil {
 		return s.finishDelete(start, b.String(), err, "forget hot failed")
 	}
-	if _, err := s.hot.Prune(ctx); err != nil {
+	if _, err := s.hotC().Prune(ctx); err != nil {
 		fmt.Fprintf(&b, "prune hot error: %v\n", err)
 	}
 
 	// Best-effort: forget the cold twin.
 	if target != nil {
-		if coldSnaps, err := s.cold.Snapshots(ctx); err == nil {
+		if coldSnaps, err := s.coldC().Snapshots(ctx); err == nil {
 			for _, cs := range coldSnaps {
 				if cs.Hostname == target.host && cs.Time.Equal(target.t) {
-					_ = s.cold.Unlock(ctx)
-					o, e := s.cold.ForgetSnapshot(ctx, cs.ID)
+					_ = s.coldC().Unlock(ctx)
+					o, e := s.coldC().ForgetSnapshot(ctx, cs.ID)
 					fmt.Fprintf(&b, "== forget cold twin %s ==\n%s\n", cs.ShortID, strings.TrimSpace(o))
 					if e == nil {
-						_, _ = s.cold.Prune(ctx)
+						_, _ = s.coldC().Prune(ctx)
 					}
 					break
 				}

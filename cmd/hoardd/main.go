@@ -49,17 +49,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	hot := restic.New(*resticBin, cfg.Hot)
-	cold := restic.New(*resticBin, cfg.Cold)
-
 	if *initRepos {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := hot.EnsureInit(ctx); err != nil {
+		if err := restic.New(*resticBin, cfg.Hot).EnsureInit(ctx); err != nil {
 			log.Error("init hot repo", "err", err)
 			os.Exit(1)
 		}
-		if err := cold.EnsureInit(ctx); err != nil {
+		if err := restic.New(*resticBin, cfg.Cold).EnsureInit(ctx); err != nil {
 			log.Error("init cold repo", "err", err)
 			os.Exit(1)
 		}
@@ -79,13 +76,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The API server doubles as the alert Notifier for the scheduler; wire it
-	// in after construction so both share one scheduler (and one job lock).
 	// Live, persistable config: GUI edits swap it in and write it back to the
-	// config file (secrets excluded — they come from env).
+	// config file. The scheduler and API build restic clients from this store on
+	// each op, so repo/endpoint/credential changes apply without a restart. The
+	// API server doubles as the alert Notifier for the scheduler.
 	cfgStore := config.NewStore(cfg, *cfgPath)
-	sched := scheduler.New(cfgStore, hot, cold, store, log)
-	srv := api.New(cfgStore, sched, store, hot, cold, log, sub)
+	sched := scheduler.New(cfgStore, *resticBin, store, log)
+	srv := api.New(cfgStore, *resticBin, sched, store, log, sub)
 	sched.SetNotifier(srv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

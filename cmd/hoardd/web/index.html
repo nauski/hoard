@@ -36,7 +36,7 @@
   .foot { color:var(--muted); font-size:12px; text-align:center; padding-bottom:24px; }
   a { color:var(--accent); }
   select { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
-  input[type=text] { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:13px; width:100%; }
+  input[type=text],input[type=password] { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:13px; width:100%; }
   .setgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
   .setgrid label { display:block; margin-bottom:4px; }
   .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -127,12 +127,19 @@
       <div style="grid-column:1/-2"><label class="sub">Webhook URL (ntfy / Discord-compatible)</label><input id="cfgWebhook" type="text" placeholder="https://ntfy.sh/your-topic"></div>
       <div><label class="sub">&nbsp;</label><label><input type="checkbox" id="cfgOnStale"> alert when a client goes stale</label></div>
     </div>
+    <div class="sub" style="margin:12px 0 8px">Offsite storage — any S3-compatible provider (IDrive e2, AWS S3, Backblaze B2, Wasabi, MinIO, Cloudflare R2…)</div>
+    <div class="setgrid">
+      <div style="grid-column:1/-1"><label class="sub">Repository (restic S3 URL: <span class="mono">s3:https://ENDPOINT/BUCKET</span>)</label><input id="cfgColdRepo" type="text" placeholder="s3:https://s3.us-west-1.amazonaws.com/my-bucket"></div>
+      <div><label class="sub">S3 access key ID</label><input id="cfgColdKey" type="text"></div>
+      <div><label class="sub">S3 secret access key <span id="cfgSecretHint" class="sub"></span></label><input id="cfgColdSecret" type="password" placeholder="leave blank to keep"></div>
+      <div><label class="sub">Repo password <span id="cfgPwHint" class="sub"></span></label><input id="cfgColdPw" type="password" placeholder="leave blank to keep"></div>
+    </div>
     <div class="bar" style="margin-top:14px">
       <button onclick="saveConfig()">Save settings</button>
+      <button class="secondary" onclick="testCold()">Test storage connection</button>
       <span class="sub" id="cfgMsg"></span>
     </div>
-    <div class="sub" style="margin-top:12px">Repos &amp; secrets (managed at deploy time — TrueNAS app):
-      hot <span class="mono" id="cfgHotRepo">—</span> · cold <span class="mono" id="cfgColdRepo">—</span> · <span id="cfgSecrets"></span></div>
+    <div class="sub" style="margin-top:10px">Hot repo (local staging, deploy-time): <span class="mono" id="cfgHotRepo">—</span> · <span id="cfgSecrets"></span></div>
   </div>
 
   <div class="card">
@@ -409,9 +416,13 @@ async function loadConfig(){
     $("#cfgKYearly").value=c.retention.keep_yearly||0;
     $("#cfgWebhook").value=c.alert.webhook_url||"";
     $("#cfgOnStale").checked=!!c.alert.on_stale;
+    $("#cfgColdRepo").value=(c.cold&&c.cold.repository)||"";
+    $("#cfgColdKey").value=(c.cold&&c.cold.s3_access_key_id)||"";
+    $("#cfgColdSecret").value=""; $("#cfgColdPw").value="";
+    $("#cfgSecretHint").textContent=c.cold&&c.cold.secret_set?"(set)":"(not set)";
+    $("#cfgPwHint").textContent=c.cold&&c.cold.password_set?"(set)":"(not set)";
     $("#cfgHotRepo").textContent=c.hot_repo||"—";
-    $("#cfgColdRepo").textContent=c.cold_repo||"—";
-    $("#cfgSecrets").innerHTML="secrets: hot "+(c.hot_password_set?"✓":"✗")+" · cold "+(c.cold_password_set?"✓":"✗")+" · e2 keys "+(c.s3_keys_set?"✓":"✗");
+    $("#cfgSecrets").textContent="hot repo password: "+(c.hot_password_set?"✓ set":"✗ not set");
   }catch(e){}
 }
 async function saveConfig(){
@@ -421,7 +432,9 @@ async function saveConfig(){
     schedule:{mirror:$("#cfgMirror").value.trim(),check:$("#cfgCheck").value.trim(),
       check_weekday: wd===""?null:parseInt(wd,10), stale_after:$("#cfgStale").value.trim()},
     retention:{keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")},
-    alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked}
+    alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked},
+    cold:{repository:$("#cfgColdRepo").value.trim(),s3_access_key_id:$("#cfgColdKey").value.trim(),
+      s3_secret_access_key:$("#cfgColdSecret").value, password:$("#cfgColdPw").value}
   };
   $("#cfgMsg").textContent="saving…";
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -429,6 +442,13 @@ async function saveConfig(){
   if(r.ok){ $("#cfgMsg").textContent="saved ✓ (applies immediately)"; loadConfig(); }
   else { $("#cfgMsg").textContent="error: "+(j.error||r.status); }
   setTimeout(()=>{if($("#cfgMsg").textContent.startsWith("saved"))$("#cfgMsg").textContent="";},4000);
+}
+async function testCold(){
+  $("#cfgMsg").textContent="testing storage… (save first if you changed it)";
+  try{
+    const j=await (await fetch("/api/config/test-cold",{method:"POST"})).json();
+    $("#cfgMsg").textContent=j.ok?"storage reachable ✓":("storage error: "+(j.error||"unreachable"));
+  }catch(e){ $("#cfgMsg").textContent="test failed"; }
 }
 loadConfig();
 

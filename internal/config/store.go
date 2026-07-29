@@ -36,17 +36,15 @@ func (s *Store) Update(fn func(*Config)) error {
 	return s.save(&nc)
 }
 
-// save writes the config to disk with secrets removed (they live in env).
+// save writes the full config (including credentials) to disk so GUI-edited
+// storage settings persist and become the source of truth. The file is written
+// 0600; keep it on a private volume. Env vars only seed empty fields on a fresh
+// deploy (see applyEnv), so once saved the file wins.
 func (s *Store) save(c *Config) error {
 	if s.path == "" {
 		return nil
 	}
-	out := *c
-	out.Hot.Password = ""
-	out.Cold.Password = ""
-	out.Cold.S3AccessKeyID = ""
-	out.Cold.S3SecretAccessKey = ""
-	raw, err := json.MarshalIndent(&out, "", "  ")
+	raw, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}

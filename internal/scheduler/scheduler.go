@@ -26,20 +26,25 @@ type Notifier interface {
 // Scheduler owns the background job loop and can also run jobs on demand
 // (triggered from the API).
 type Scheduler struct {
-	cfg   *config.Store
-	hot   *restic.Client
-	cold  *restic.Client
-	store *state.Store
-	log   *slog.Logger
-	note  Notifier
+	cfg       *config.Store
+	resticBin string
+	store     *state.Store
+	log       *slog.Logger
+	note      Notifier
 
 	mu      sync.Mutex // serializes restic operations; only one runs at a time
 	running string     // name of the currently running job, "" if idle
 }
 
-func New(cfg *config.Store, hot, cold *restic.Client, store *state.Store, log *slog.Logger) *Scheduler {
-	return &Scheduler{cfg: cfg, hot: hot, cold: cold, store: store, log: log}
+func New(cfg *config.Store, resticBin string, store *state.Store, log *slog.Logger) *Scheduler {
+	return &Scheduler{cfg: cfg, resticBin: resticBin, store: store, log: log}
 }
+
+// hotC / coldC build a restic client from the CURRENT config, so changing the
+// repo/endpoint/credentials in Settings takes effect on the next operation
+// without a restart. restic.New just captures strings, so this is cheap.
+func (s *Scheduler) hotC() *restic.Client  { return restic.New(s.resticBin, s.cfg.Load().Hot) }
+func (s *Scheduler) coldC() *restic.Client { return restic.New(s.resticBin, s.cfg.Load().Cold) }
 
 // SetNotifier wires the alert sink after construction. This breaks the
 // construction cycle between the scheduler and the API server (which is itself
@@ -102,7 +107,7 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	defer s.release()
 
 	start := time.Now()
-	out, err := s.cold.CopyFrom(ctx, s.cfg.Load().Hot)
+	out, err := s.coldC().CopyFrom(ctx, s.cfg.Load().Hot)
 	res := state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
@@ -114,7 +119,7 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	}
 	res.OK = true
 	res.Message = "snapshots copied to e2"
-	if st, e := s.cold.Stats(ctx); e == nil {
+	if st, e := s.coldC().Stats(ctx); e == nil {
 		res.Message += " · e2 now " + humanBytes(st.TotalSize)
 	}
 	s.store.RecordJob(res)
@@ -126,7 +131,7 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 
 func (s *Scheduler) prune(ctx context.Context) {
 	start := time.Now()
-	out, err := s.cold.ForgetPrune(ctx, s.cfg.Load().Retention)
+	out, err := s.coldC().ForgetPrune(ctx, s.cfg.Load().Retention)
 	res := state.JobResult{Job: "prune", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
@@ -178,7 +183,7 @@ func (s *Scheduler) Check(ctx context.Context) {
 	defer s.release()
 
 	start := time.Now()
-	out, err := s.cold.Check(ctx, "5%")
+	out, err := s.coldC().Check(ctx, "5%")
 	res := state.JobResult{Job: "check", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
@@ -197,7 +202,7 @@ func (s *Scheduler) Check(ctx context.Context) {
 // RefreshClients rebuilds per-host freshness from the hot repo's snapshots and
 // fires staleness alerts for hosts past the StaleAfter window.
 func (s *Scheduler) RefreshClients(ctx context.Context) {
-	snaps, err := s.hot.Snapshots(ctx)
+	snaps, err := s.hotC().Snapshots(ctx)
 	if err != nil {
 		s.log.Warn("refresh clients: snapshots failed", "err", err)
 		return

@@ -20,24 +20,28 @@ import (
 
 // Server wires HTTP handlers to the scheduler, store, and restic clients.
 type Server struct {
-	cfg    *config.Store
-	sched  *scheduler.Scheduler
-	store  *state.Store
-	hot    *restic.Client
-	cold   *restic.Client
-	log    *slog.Logger
-	webFS  fs.FS
-	client *http.Client
-	live   *liveStore
+	cfg       *config.Store
+	resticBin string
+	sched     *scheduler.Scheduler
+	store     *state.Store
+	log       *slog.Logger
+	webFS     fs.FS
+	client    *http.Client
+	live      *liveStore
 }
 
-func New(cfg *config.Store, sched *scheduler.Scheduler, store *state.Store, hot, cold *restic.Client, log *slog.Logger, webFS fs.FS) *Server {
+func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store *state.Store, log *slog.Logger, webFS fs.FS) *Server {
 	return &Server{
-		cfg: cfg, sched: sched, store: store, hot: hot, cold: cold, log: log, webFS: webFS,
+		cfg: cfg, resticBin: resticBin, sched: sched, store: store, log: log, webFS: webFS,
 		client: &http.Client{Timeout: 10 * time.Second},
 		live:   newLiveStore(),
 	}
 }
+
+// hot / cold build a restic client from the current config so repo/endpoint/
+// credential changes in Settings apply without a restart.
+func (s *Server) hot() *restic.Client  { return restic.New(s.resticBin, s.cfg.Load().Hot) }
+func (s *Server) cold() *restic.Client { return restic.New(s.resticBin, s.cfg.Load().Cold) }
 
 // Handler returns the root mux (dashboard + /api routes).
 func (s *Server) Handler() http.Handler {
@@ -45,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleSetConfig)
+	mux.HandleFunc("POST /api/config/test-cold", s.handleTestCold)
 	mux.HandleFunc("GET /api/snapshots", s.handleSnapshots)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("POST /api/actions/mirror", s.action("mirror"))
@@ -91,7 +96,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	snaps, err := s.hot.Snapshots(ctx)
+	snaps, err := s.hot().Snapshots(ctx)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -156,10 +161,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	out := map[string]any{}
-	if st, err := s.hot.Stats(ctx); err == nil {
+	if st, err := s.hot().Stats(ctx); err == nil {
 		out["hot"] = st
 	}
-	if st, err := s.cold.Stats(ctx); err == nil {
+	if st, err := s.cold().Stats(ctx); err == nil {
 		out["cold"] = st
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -174,7 +179,7 @@ func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	entries, err := s.hot.Ls(ctx, id, r.URL.Query().Get("path"))
+	entries, err := s.hot().Ls(ctx, id, r.URL.Query().Get("path"))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -194,7 +199,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
 	ctx := r.Context()
-	if err := s.hot.Dump(ctx, id, p, w); err != nil {
+	if err := s.hot().Dump(ctx, id, p, w); err != nil {
 		// Headers may already be sent; log and give up.
 		s.log.Error("download failed", "err", err, "path", p)
 	}
