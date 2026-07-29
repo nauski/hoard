@@ -224,22 +224,23 @@ func Load(path, resticBin string, log *slog.Logger) (*Agent, error) {
 	return a, nil
 }
 
-// applyEnv lets a declarative deployment (e.g. a NixOS systemd unit) pin the
-// server URL, password file, and host without touching the GUI-editable JSON,
-// which continues to own the user's path/exclude/schedule choices. Env wins at
-// startup so infra stays declarative even if the JSON drifts.
+// applyEnv SEEDS empty settings from the environment (a declarative deploy like
+// NixOS can supply an initial server URL / password file / host) but does NOT
+// override values already set in the GUI-editable JSON. The Settings panel is
+// the source of truth for where the client connects; env just provides the
+// first-run default so a fresh install works out of the box.
 func (a *Agent) applyEnv() {
-	if v := os.Getenv("HOARD_AGENT_REPOSITORY"); v != "" {
-		a.cfg.Repository = v
+	if a.cfg.Repository == "" {
+		a.cfg.Repository = os.Getenv("HOARD_AGENT_REPOSITORY")
 	}
-	if v := os.Getenv("HOARD_AGENT_PASSWORD_FILE"); v != "" {
-		a.cfg.PasswordFile = v
+	if a.cfg.PasswordFile == "" {
+		a.cfg.PasswordFile = os.Getenv("HOARD_AGENT_PASSWORD_FILE")
 	}
-	if v := os.Getenv("HOARD_AGENT_HOST"); v != "" {
-		a.cfg.Host = v
+	if a.cfg.Host == "" {
+		a.cfg.Host = os.Getenv("HOARD_AGENT_HOST")
 	}
-	if v := os.Getenv("HOARD_AGENT_SERVER_URL"); v != "" {
-		a.cfg.ServerURL = v
+	if a.cfg.ServerURL == "" {
+		a.cfg.ServerURL = os.Getenv("HOARD_AGENT_SERVER_URL")
 	}
 }
 

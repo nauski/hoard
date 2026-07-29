@@ -60,8 +60,9 @@ in {
         Wants = [ "network-online.target" ];
       };
       Service = {
-        # repository / password file / host are pinned declaratively; the
-        # GUI-editable JSON owns paths, excludes, and schedule.
+        # repository / password file / host SEED the agent's settings on first
+        # run; the Settings panel in the GUI is the source of truth and can
+        # change them thereafter (all settings persist to the config JSON).
         Environment = [
           "HOARD_AGENT_REPOSITORY=${cfg.repository}"
           "HOARD_AGENT_PASSWORD_FILE=${cfg.passwordFile}"
