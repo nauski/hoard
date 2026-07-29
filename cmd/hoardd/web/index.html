@@ -88,7 +88,7 @@
   <div class="card">
     <h2>Clients</h2>
     <table>
-      <thead><tr><th>Host</th><th>Last snapshot</th><th>Age</th><th>Paths</th><th>State</th></tr></thead>
+      <thead><tr><th>Host</th><th>Last snapshot</th><th>Age</th><th>Size</th><th>Paths</th><th>State</th></tr></thead>
       <tbody id="clients"><tr><td colspan="5" class="sub">loading…</td></tr></tbody>
     </table>
   </div>
@@ -194,8 +194,8 @@ async function refresh(){
       const c = clients[k];
       const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">fresh</span>';
       return `<tr><td class="mono">${c.hostname}</td><td>${fmt(c.last_snapshot)}</td>
-        <td>${age(c.last_snapshot)}</td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}</td></tr>`;
-    }).join("") : '<tr><td colspan="5" class="sub">no client snapshots yet</td></tr>';
+        <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}</td></tr>`;
+    }).join("") : '<tr><td colspan="6" class="sub">no client snapshots yet</td></tr>';
   }catch(e){ /* transient */ }
 
   try{

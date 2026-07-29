@@ -6,7 +6,9 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,6 +114,9 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	}
 	res.OK = true
 	res.Message = "snapshots copied to e2"
+	if st, e := s.cold.Stats(ctx); e == nil {
+		res.Message += " · e2 now " + humanBytes(st.TotalSize)
+	}
 	s.store.RecordJob(res)
 	s.log.Info("mirror ok")
 
@@ -133,7 +138,36 @@ func (s *Scheduler) prune(ctx context.Context) {
 	}
 	res.OK = true
 	res.Message = "retention applied to e2"
+	if freed := parseFreed(out); freed != "" {
+		res.Message += " · freed " + freed
+	}
 	s.store.RecordJob(res)
+}
+
+// parseFreed pulls restic prune's "to delete: N blobs / X" freed amount.
+func parseFreed(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "to delete:") {
+			if i := strings.LastIndex(line, "/"); i >= 0 {
+				return strings.TrimSpace(line[i+1:])
+			}
+		}
+	}
+	return ""
+}
+
+// humanBytes formats a byte count for job messages.
+func humanBytes(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // Check verifies cold-repo integrity with a sampled data read.
@@ -172,11 +206,16 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 	for _, sn := range snaps {
 		c, ok := latest[sn.Hostname]
 		if !ok || sn.Time.After(c.LastSnapshot) {
+			var size uint64
+			if sn.Summary != nil {
+				size = sn.Summary.TotalBytesProcessed
+			}
 			latest[sn.Hostname] = state.Client{
 				Hostname:     sn.Hostname,
 				LastSnapshot: sn.Time,
 				SnapshotID:   sn.ShortID,
 				Paths:        sn.Paths,
+				Size:         size,
 			}
 		}
 	}

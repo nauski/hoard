@@ -27,6 +27,7 @@ type Client struct {
 	SnapshotID   string    `json:"snapshot_id"`
 	Paths        []string  `json:"paths"`
 	Stale        bool      `json:"stale"`
+	Size         uint64    `json:"size"` // latest snapshot's logical size
 }
 
 // Store is the persisted, concurrency-safe application state.
