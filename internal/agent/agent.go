@@ -47,8 +47,9 @@ type Agent struct {
 	log       *slog.Logger
 	resticBin string
 
-	running bool
-	lastRun RunResult
+	running  bool
+	lastRun  RunResult
+	progress *restic.Progress // live progress while running, nil when idle
 }
 
 // RunResult records the outcome of the most recent backup.
@@ -139,6 +140,17 @@ func (a *Agent) LastRun() (RunResult, bool) {
 	return a.lastRun, a.running
 }
 
+// Progress returns the live backup progress, or nil when idle.
+func (a *Agent) Progress() *restic.Progress {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.progress == nil {
+		return nil
+	}
+	p := *a.progress
+	return &p
+}
+
 func (a *Agent) resticClient() (*restic.Client, error) {
 	pw := os.Getenv("RESTIC_PASSWORD")
 	if a.cfg.PasswordFile != "" {
@@ -172,6 +184,7 @@ func (a *Agent) Backup(ctx context.Context) error {
 	defer func() {
 		a.mu.Lock()
 		a.running = false
+		a.progress = nil // clear live progress once the run ends
 		a.mu.Unlock()
 	}()
 
@@ -187,7 +200,13 @@ func (a *Agent) Backup(ctx context.Context) error {
 		return err
 	}
 
-	summary, out, err := cl.Backup(ctx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags)
+	onProgress := func(p restic.Progress) {
+		a.mu.Lock()
+		pc := p
+		a.progress = &pc
+		a.mu.Unlock()
+	}
+	summary, out, err := cl.Backup(ctx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, onProgress)
 	rr.EndedAt = time.Now()
 	rr.Output = out
 	rr.Summary = summary

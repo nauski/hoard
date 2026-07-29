@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/nauski/hoard/internal/restic"
 )
 
 // Server exposes the agent's web GUI and JSON API.
@@ -53,19 +55,21 @@ func (s *Server) setConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 type statusResponse struct {
-	Config  Config    `json:"config"`
-	Running bool      `json:"running"`
-	LastRun RunResult `json:"last_run"`
-	Now     time.Time `json:"now"`
+	Config   Config           `json:"config"`
+	Running  bool             `json:"running"`
+	LastRun  RunResult        `json:"last_run"`
+	Progress *restic.Progress `json:"progress,omitempty"`
+	Now      time.Time        `json:"now"`
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	last, running := s.agent.LastRun()
 	writeJSON(w, http.StatusOK, statusResponse{
-		Config:  s.agent.GetConfig(),
-		Running: running,
-		LastRun: last,
-		Now:     time.Now(),
+		Config:   s.agent.GetConfig(),
+		Running:  running,
+		LastRun:  last,
+		Progress: s.agent.Progress(),
+		Now:      time.Now(),
 	})
 }
 

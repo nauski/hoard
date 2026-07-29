@@ -118,10 +118,26 @@ type BackupResult struct {
 	TotalBytes      uint64 `json:"total_bytes_processed"`
 }
 
+// Progress is a live snapshot of an in-flight backup, parsed from restic's
+// --json "status" messages. It carries everything needed to render a progress
+// bar with an ETA and the file currently being read.
+type Progress struct {
+	PercentDone      float64  `json:"percent_done"` // 0..1
+	FilesDone        int      `json:"files_done"`
+	TotalFiles       int      `json:"total_files"`
+	BytesDone        uint64   `json:"bytes_done"`
+	TotalBytes       uint64   `json:"total_bytes"`
+	SecondsElapsed   int      `json:"seconds_elapsed"`
+	SecondsRemaining int      `json:"seconds_remaining"` // restic's ETA
+	CurrentFiles     []string `json:"current_files"`
+}
+
 // Backup backs up the given paths to this repo. excludes are restic --exclude
 // patterns; host overrides the snapshot hostname; tags are applied to the
-// snapshot. It parses the final summary message from restic's JSON output.
-func (c *Client) Backup(ctx context.Context, paths, excludes []string, host string, tags []string) (*BackupResult, string, error) {
+// snapshot. If onProgress is non-nil it is called for each restic "status"
+// message (roughly a few times per second) so callers can show live progress.
+// It parses and returns the final summary.
+func (c *Client) Backup(ctx context.Context, paths, excludes []string, host string, tags []string, onProgress func(Progress)) (*BackupResult, string, error) {
 	if len(paths) == 0 {
 		return nil, "", fmt.Errorf("no paths configured to back up")
 	}
@@ -139,37 +155,67 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 
 	cmd := exec.CommandContext(ctx, c.bin, args...)
 	cmd.Env = append(cmd.Environ(), c.env()...)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	err := cmd.Run()
-	// restic streams one JSON object per line; the last "summary" carries results.
-	res := parseBackupSummary(out.String())
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		msg := strings.TrimSpace(errb.String())
-		return res, tail(out.String(), 2000), fmt.Errorf("restic backup: %w: %s", err, msg)
+		return nil, "", err
 	}
-	return res, tail(out.String(), 2000), nil
-}
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Start(); err != nil {
+		return nil, "", err
+	}
 
-func parseBackupSummary(stdout string) *BackupResult {
-	sc := bufio.NewScanner(strings.NewReader(stdout))
-	sc.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-	var res *BackupResult
+	// Stream stdout line by line: dispatch "status" to the callback and keep the
+	// last "summary" for the return value. We retain only a short tail of raw
+	// output for diagnostics rather than buffering the whole (potentially huge)
+	// status stream.
+	var result *BackupResult
+	var tailLines []string
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := sc.Bytes()
 		var probe struct {
 			MessageType string `json:"message_type"`
 		}
-		if json.Unmarshal(line, &probe) != nil || probe.MessageType != "summary" {
+		if json.Unmarshal(line, &probe) != nil {
 			continue
 		}
-		var s BackupResult
-		if json.Unmarshal(line, &s) == nil {
-			res = &s
+		switch probe.MessageType {
+		case "status":
+			if onProgress != nil {
+				var p Progress
+				if json.Unmarshal(line, &p) == nil {
+					onProgress(p)
+				}
+			}
+		case "summary":
+			var s BackupResult
+			if json.Unmarshal(line, &s) == nil {
+				result = &s
+			}
+			tailLines = appendTail(tailLines, string(line))
+		default:
+			tailLines = appendTail(tailLines, string(line))
 		}
 	}
-	return res
+
+	waitErr := cmd.Wait()
+	out := strings.Join(tailLines, "\n")
+	if waitErr != nil {
+		msg := strings.TrimSpace(errb.String())
+		return result, out, fmt.Errorf("restic backup: %w: %s", waitErr, msg)
+	}
+	return result, out, nil
+}
+
+// appendTail keeps the most recent ~20 non-status lines for diagnostics.
+func appendTail(lines []string, s string) []string {
+	lines = append(lines, s)
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	return lines
 }
 
 // Check verifies repository integrity. readData also re-reads a subset of pack

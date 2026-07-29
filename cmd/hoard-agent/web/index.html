@@ -34,6 +34,12 @@
   .grid2{display:grid;grid-template-columns:1fr 160px;gap:16px}
   .msg{font-size:12px;margin-top:8px}
   .foot{color:var(--muted);font-size:12px;text-align:center;padding-bottom:24px}
+  .progress{margin-top:4px}
+  .pbar{height:10px;background:#0d1117;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .pfill{height:100%;width:0;background:linear-gradient(90deg,#3fb950,#58a6ff);transition:width .4s ease}
+  .pstats{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .pstats b{color:var(--fg);font-weight:600}
+  .pcur{margin-top:6px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style>
 </head>
 <body>
@@ -80,6 +86,21 @@
     </div>
   </div>
 
+  <div class="card" id="progressCard" style="display:none">
+    <h2>Backing up…</h2>
+    <div class="progress">
+      <div class="pbar"><div id="pfill" class="pfill"></div></div>
+      <div class="pstats">
+        <span><b id="ppct">0%</b> done</span>
+        <span>files <b id="pfiles">0 / 0</b></span>
+        <span>data <b id="pbytes">0 / 0</b></span>
+        <span>elapsed <b id="pelapsed">0s</b></span>
+        <span>ETA <b id="peta">—</b></span>
+      </div>
+      <div id="pcur" class="pcur"></div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Last backup</h2>
     <div id="last" class="sub">—</div>
@@ -99,6 +120,8 @@
 <script>
 const $=s=>document.querySelector(s);
 const fmt=t=>t&&!String(t).startsWith("0001")?new Date(t).toLocaleString():"never";
+function hBytes(b){b=b||0;if(b<1024)return b+" B";const u=["KiB","MiB","GiB","TiB","PiB"];let i=-1;do{b/=1024;i++}while(b>=1024&&i<u.length-1);return b.toFixed(1)+" "+u[i];}
+function hDur(s){s=Math.max(0,Math.round(s||0));if(s<60)return s+"s";const m=Math.floor(s/60),ss=s%60;if(m<60)return m+"m "+ss+"s";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 
 function addRow(kind,val){
   const box=$("#"+kind);
@@ -133,13 +156,30 @@ async function backup(){
   $("#msg").textContent = r.ok ? "backup started" : ("error: "+(j.error||r.status));
   setTimeout(refresh,600);
 }
+let running=false;
+function renderProgress(p){
+  const card=$("#progressCard");
+  if(!p){ card.style.display="none"; return; }
+  card.style.display="";
+  const pct=Math.round((p.percent_done||0)*100);
+  $("#pfill").style.width=pct+"%";
+  $("#ppct").textContent=pct+"%";
+  $("#pfiles").textContent=(p.files_done||0)+" / "+(p.total_files||0);
+  $("#pbytes").textContent=hBytes(p.bytes_done)+" / "+hBytes(p.total_bytes);
+  $("#pelapsed").textContent=hDur(p.seconds_elapsed);
+  $("#peta").textContent=p.seconds_remaining>0?hDur(p.seconds_remaining):"—";
+  const cur=(p.current_files||[])[0]||"";
+  $("#pcur").textContent=cur?("reading "+cur):"";
+}
 async function refresh(){
   try{
     const st=await (await fetch("/api/status")).json();
+    running=!!st.running;
     const run=$("#run");
-    if(st.running){ run.textContent="backing up…"; run.className="badge b-run"; }
+    if(running){ run.textContent="backing up…"; run.className="badge b-run"; }
     else { run.textContent="idle"; run.className="badge b-idle"; }
-    $("#now").disabled=st.running;
+    $("#now").disabled=running;
+    renderProgress(running?st.progress:null);
     const lr=st.last_run;
     if(lr && lr.started_at && !String(lr.started_at).startsWith("0001")){
       const b=lr.ok?'<span class="badge b-ok">ok</span>':'<span class="badge b-bad">failed</span>';
@@ -154,8 +194,9 @@ async function refresh(){
     ).join("") : '<tr><td colspan="3" class="sub">no snapshots yet</td></tr>';
   }catch(e){ $("#snaps").innerHTML='<tr><td colspan="3" class="sub">can\'t reach server</td></tr>'; }
 }
-load().then(refresh);
-setInterval(refresh,5000);
+// Adaptive polling: 1s while a backup runs (smooth progress), 5s when idle.
+async function loop(){ await refresh(); setTimeout(loop, running?1000:5000); }
+load().then(loop);
 </script>
 </body>
 </html>
