@@ -28,6 +28,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/config", s.setConfig)
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/snapshots", s.snapshots)
+	mux.HandleFunc("GET /api/browse", s.browseDir)
 	mux.HandleFunc("POST /api/backup", s.backup)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -82,6 +83,15 @@ func (s *Server) snapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, snaps)
+}
+
+func (s *Server) browseDir(w http.ResponseWriter, r *http.Request) {
+	res, err := browse(r.URL.Query().Get("path"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {

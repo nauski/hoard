@@ -40,6 +40,18 @@
   .pstats{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .pstats b{color:var(--fg);font-weight:600}
   .pcur{margin-top:6px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(640px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+  .modal .mhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
+  .modal .mhead h3{margin:0;font-size:14px;flex:0 0 auto}
+  .crumb{flex:1;background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:6px 9px;font-family:ui-monospace,monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mlist{overflow-y:auto;padding:6px}
+  .ditem{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;cursor:pointer}
+  .ditem:hover{background:#0d1117}
+  .ditem .nm{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ditem .addbtn{background:transparent;border:1px solid var(--accent);color:var(--accent);border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer}
+  .mfoot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between}
+  .mfoot .sub{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -69,7 +81,10 @@
   <div class="card">
     <h2>What to back up</h2>
     <div id="paths" class="list"></div>
-    <button class="add" onclick="addRow('paths','')">+ add path</button>
+    <div class="bar" style="margin-top:6px">
+      <button class="add" onclick="openBrowse()">📁 Browse…</button>
+      <button class="add" onclick="addRow('paths','')">+ type path manually</button>
+    </div>
   </div>
 
   <div class="card">
@@ -117,6 +132,25 @@
   <div class="foot">hoard agent · pushes to your hoard server · status refreshes every 5s</div>
 </main>
 
+<div id="browseBg" class="modal-bg">
+  <div class="modal">
+    <div class="mhead">
+      <h3>Pick a folder</h3>
+      <button class="x" onclick="browseUp()" title="Up one level">↑</button>
+      <input id="crumb" class="crumb" value="" onkeydown="if(event.key==='Enter')browseTo(this.value)" />
+      <button class="x" onclick="browseGo(browseHome)" title="Home">⌂</button>
+    </div>
+    <div id="mlist" class="mlist"></div>
+    <div class="mfoot">
+      <span class="sub mono" id="mcur">—</span>
+      <div class="bar">
+        <button class="add" onclick="addCurrent()">+ Add this folder</button>
+        <button class="ghost" onclick="closeBrowse()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const $=s=>document.querySelector(s);
 const fmt=t=>t&&!String(t).startsWith("0001")?new Date(t).toLocaleString():"never";
@@ -133,6 +167,39 @@ function addRow(kind,val){
   row.appendChild(inp); row.appendChild(del); box.appendChild(row);
 }
 function readList(kind){ return [...document.querySelectorAll("#"+kind+" input")].map(i=>i.value.trim()).filter(Boolean); }
+
+// --- folder picker ---
+let browseCur="", browseParent="", browseHome="";
+function existingPaths(){ return new Set(readList("paths")); }
+function openBrowse(){ $("#browseBg").style.display="flex"; browseGo(""); }
+function closeBrowse(){ $("#browseBg").style.display="none"; }
+function browseUp(){ if(browseParent) browseGo(browseParent); }
+function browseTo(p){ browseGo(p); }
+async function browseGo(path){
+  try{
+    const r=await fetch("/api/browse?path="+encodeURIComponent(path||""));
+    const d=await r.json();
+    if(!r.ok){ $("#mlist").innerHTML='<div class="sub" style="padding:12px">'+(d.error||"can\'t read folder")+'</div>'; return; }
+    browseCur=d.path; browseParent=d.parent||""; browseHome=d.home||"";
+    $("#crumb").value=d.path; $("#mcur").textContent=d.path;
+    const have=existingPaths();
+    const rows=(d.entries||[]).map(e=>{
+      const added=have.has(e.path);
+      return `<div class="ditem"><span onclick="browseGo('${e.path.replace(/'/g,"\\'")}')" style="flex:1;display:flex;gap:8px;align-items:center;overflow:hidden">📁 <span class="nm">${e.name}</span></span>`+
+        (added?'<span class="sub">added ✓</span>':`<button class="addbtn" onclick="addPath('${e.path.replace(/'/g,"\\'")}')">+ Add</button>`)+`</div>`;
+    }).join("");
+    $("#mlist").innerHTML = rows || '<div class="sub" style="padding:12px">no subfolders here</div>';
+  }catch(e){ $("#mlist").innerHTML='<div class="sub" style="padding:12px">error reading folder</div>'; }
+}
+function addPath(p){
+  if(existingPaths().has(p)) return;
+  // drop a leftover empty row, then add
+  [...document.querySelectorAll("#paths input")].forEach(i=>{ if(!i.value.trim()) i.closest(".row").remove(); });
+  addRow("paths",p);
+  browseGo(browseCur); // refresh "added ✓" markers
+  $("#msg").textContent="added "+p; setTimeout(()=>$("#msg").textContent="",2000);
+}
+function addCurrent(){ addPath(browseCur); }
 
 async function load(){
   const c=await (await fetch("/api/config")).json();
