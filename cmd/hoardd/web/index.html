@@ -71,8 +71,8 @@
   <h1>🗄️ hoard</h1>
   <span id="running" class="badge b-idle">idle</span>
   <div class="repo">
-    <div>hot: <span id="hotRepo" class="mono">—</span></div>
-    <div>cold: <span id="coldRepo" class="mono">—</span></div>
+    <div>hot: <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b></div>
+    <div>cold: <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b></div>
   </div>
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
 </header>
@@ -262,8 +262,10 @@ function renderVersions(){
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no versions for this client</div>'; return; }
   $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
     const sel = s.short_id===bSnap ? 'style="background:var(--sunken)"' : '';
+    const sz = s.summary ? hBytes(s.summary.total_bytes_processed) : "—";
+    const added = s.summary && s.summary.data_added ? " <span class='sub'>(+"+hBytes(s.summary.data_added)+" new)</span>" : "";
     return `<div class="vrow" ${sel}>
-      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
+      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
       <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
     </div>`;
@@ -346,6 +348,18 @@ function toast(m){ const el=$("#bHint"); el.textContent=m; setTimeout(()=>{ if(b
 
 loadClients();
 setInterval(loadClients, 8000);
+
+// Repository storage totals (deduplicated). Fetched infrequently — stats reads
+// the index and cold hits e2.
+async function loadStats(){
+  try{
+    const st=await (await fetch("/api/stats")).json();
+    if(st.hot) $("#hotSize").textContent="· "+hBytes(st.hot.total_size);
+    if(st.cold) $("#coldSize").textContent="· "+hBytes(st.cold.total_size);
+  }catch(e){}
+}
+loadStats();
+setInterval(loadStats, 60000);
 
 // ---------------- Running backups (all clients) ----------------
 function hDur(s){s=Math.max(0,Math.round(s||0));if(s<60)return s+"s";const m=Math.floor(s/60),ss=s%60;if(m<60)return m+"m "+ss+"s";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}

@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/actions/mirror", s.action("mirror"))
 	mux.HandleFunc("POST /api/actions/check", s.action("check"))
 	// Backup browser (reads the fast hot repo; deletes hit hot + cold).
+	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("GET /api/ls", s.handleLs)
 	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("POST /api/purge", s.handlePurge)
@@ -144,6 +145,22 @@ func (s *Server) Notify(ctx context.Context, title, body string) {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// handleStats returns repository storage totals (deduplicated raw-data size)
+// for the hot and cold repos. Somewhat expensive (reads the index), so the UI
+// calls it infrequently.
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	out := map[string]any{}
+	if st, err := s.hot.Stats(ctx); err == nil {
+		out["hot"] = st
+	}
+	if st, err := s.cold.Stats(ctx); err == nil {
+		out["cold"] = st
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleLs lists one directory level inside a snapshot (hot repo).

@@ -366,10 +366,14 @@ async function reconcileDeleted(id){
 }
 function renderVersions(){
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no backups yet</div>'; return; }
-  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
+  const total=bSnaps.reduce((a,s)=>a+((s.summary&&s.summary.total_bytes_processed)||0),0);
+  const totalStr=bSnaps.some(s=>s.summary)?' · latest '+hBytes(bSnaps[0].summary?bSnaps[0].summary.total_bytes_processed:0):'';
+  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s)'+totalStr+':</div>'+bSnaps.map(s=>{
     const sel=s.short_id===bSnap?'style="background:var(--sunken)"':'';
+    const sz=s.summary?hBytes(s.summary.total_bytes_processed):"—";
+    const added=s.summary&&s.summary.data_added?" <span class='sub'>(+"+hBytes(s.summary.data_added)+" new)</span>":"";
     return `<div class="vrow" ${sel}>
-      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
+      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
       <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
     </div>`;

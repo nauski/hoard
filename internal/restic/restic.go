@@ -69,13 +69,23 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 
 // Snapshot is a single restic snapshot (subset of fields we surface).
 type Snapshot struct {
-	ID       string    `json:"id"`
-	ShortID  string    `json:"short_id"`
-	Time     time.Time `json:"time"`
-	Hostname string    `json:"hostname"`
-	Username string    `json:"username"`
-	Paths    []string  `json:"paths"`
-	Tags     []string  `json:"tags"`
+	ID       string           `json:"id"`
+	ShortID  string           `json:"short_id"`
+	Time     time.Time        `json:"time"`
+	Hostname string           `json:"hostname"`
+	Username string           `json:"username"`
+	Paths    []string         `json:"paths"`
+	Tags     []string         `json:"tags"`
+	Summary  *SnapshotSummary `json:"summary,omitempty"`
+}
+
+// SnapshotSummary is the backup summary restic embeds in each snapshot (0.17+).
+// TotalBytesProcessed is the version's logical size (what was backed up);
+// DataAdded is what that backup cost in the repo after deduplication.
+type SnapshotSummary struct {
+	TotalBytesProcessed uint64 `json:"total_bytes_processed"`
+	DataAdded           uint64 `json:"data_added"`
+	TotalFilesProcessed int    `json:"total_files_processed"`
 }
 
 // Snapshots lists snapshots in the repo, newest first. Uses --no-lock so it
