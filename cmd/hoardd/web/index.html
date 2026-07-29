@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hoard — backup control</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  header .repo { color:var(--muted); font-size:12px; margin-left:auto; text-align:right; }
+  main { padding:24px; max-width:1100px; margin:0 auto; display:grid; gap:20px; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 10px; }
+  .metric { font-size:22px; font-weight:600; }
+  .sub { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  th { color:var(--muted); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .b-ok { background:rgba(63,185,80,.15); color:var(--ok); }
+  .b-bad { background:rgba(248,81,73,.15); color:var(--bad); }
+  .b-warn { background:rgba(210,153,34,.15); color:var(--warn); }
+  .b-idle { background:rgba(139,148,158,.15); color:var(--muted); }
+  button { background:var(--accent); color:#0d1117; border:0; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  .actions { display:flex; gap:10px; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  .foot { color:var(--muted); font-size:12px; text-align:center; padding-bottom:24px; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗄️ hoard</h1>
+  <span id="running" class="badge b-idle">idle</span>
+  <div class="repo">
+    <div>hot: <span id="hotRepo" class="mono">—</span></div>
+    <div>cold: <span id="coldRepo" class="mono">—</span></div>
+  </div>
+</header>
+
+<main>
+  <div class="row" id="jobCards"></div>
+
+  <div class="card">
+    <h2>Clients</h2>
+    <table>
+      <thead><tr><th>Host</th><th>Last snapshot</th><th>Age</th><th>Paths</th><th>State</th></tr></thead>
+      <tbody id="clients"><tr><td colspan="5" class="sub">loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Actions</h2>
+    <div class="actions">
+      <button id="btnMirror">Mirror to e2 now</button>
+      <button id="btnCheck" class="secondary">Verify integrity</button>
+    </div>
+    <p class="sub" id="actionMsg"></p>
+  </div>
+
+  <div class="card">
+    <h2>Recent jobs</h2>
+    <table>
+      <thead><tr><th>Job</th><th>When</th><th>Duration</th><th>Result</th><th>Message</th></tr></thead>
+      <tbody id="history"><tr><td colspan="5" class="sub">loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="foot">hoard · auto-refreshes every 5s</div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = t => t ? new Date(t).toLocaleString() : "never";
+const zero = "0001-01-01T00:00:00Z";
+function age(t){
+  if(!t || t.startsWith("0001")) return "—";
+  const s = Math.max(0,(Date.now()-new Date(t))/1000);
+  if(s<3600) return Math.round(s/60)+"m";
+  if(s<86400) return (s/3600).toFixed(1)+"h";
+  return (s/86400).toFixed(1)+"d";
+}
+function badge(ok){ return ok ? '<span class="badge b-ok">ok</span>' : '<span class="badge b-bad">failed</span>'; }
+
+async function refresh(){
+  try{
+    const st = await (await fetch("/api/status")).json();
+    $("#hotRepo").textContent = st.hot_repo || "—";
+    $("#coldRepo").textContent = st.cold_repo || "—";
+    const run = st.running || "";
+    const r = $("#running");
+    r.textContent = run || "idle";
+    r.className = "badge " + (run ? "b-warn" : "b-idle");
+    $("#btnMirror").disabled = !!run;
+    $("#btnCheck").disabled = !!run;
+
+    const jobs = st.jobs || {};
+    const order = ["mirror","check","prune"];
+    $("#jobCards").innerHTML = order.map(j=>{
+      const job = jobs[j];
+      const state = job ? (job.ok?'b-ok':'b-bad') : 'b-idle';
+      const label = job ? (job.ok?'ok':'failed') : 'never run';
+      return `<div class="card"><h2>${j}</h2>
+        <div class="metric"><span class="badge ${state}">${label}</span></div>
+        <div class="sub">${job?fmt(job.ended_at):"—"}</div></div>`;
+    }).join("");
+
+    const clients = st.clients || {};
+    const keys = Object.keys(clients).sort();
+    $("#clients").innerHTML = keys.length ? keys.map(k=>{
+      const c = clients[k];
+      const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">fresh</span>';
+      return `<tr><td class="mono">${c.hostname}</td><td>${fmt(c.last_snapshot)}</td>
+        <td>${age(c.last_snapshot)}</td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}</td></tr>`;
+    }).join("") : '<tr><td colspan="5" class="sub">no client snapshots yet</td></tr>';
+  }catch(e){ /* transient */ }
+
+  try{
+    const hist = await (await fetch("/api/history")).json();
+    const rows = (hist||[]).slice(-15).reverse();
+    $("#history").innerHTML = rows.length ? rows.map(h=>{
+      const dur = ((new Date(h.ended_at)-new Date(h.started_at))/1000).toFixed(1)+"s";
+      return `<tr><td>${h.job}</td><td>${fmt(h.started_at)}</td><td>${dur}</td>
+        <td>${badge(h.ok)}</td><td class="sub">${(h.message||"").slice(0,80)}</td></tr>`;
+    }).join("") : '<tr><td colspan="5" class="sub">no jobs recorded</td></tr>';
+  }catch(e){}
+}
+
+async function trigger(job){
+  $("#actionMsg").textContent = "starting "+job+"…";
+  const res = await fetch("/api/actions/"+job, {method:"POST"});
+  const j = await res.json();
+  $("#actionMsg").textContent = res.ok ? (job+" started") : ("error: "+(j.error||res.status));
+  setTimeout(refresh, 500);
+}
+$("#btnMirror").onclick = ()=>trigger("mirror");
+$("#btnCheck").onclick = ()=>trigger("check");
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+{
+  "listen_addr": ":8080",
+  "state_path": "/data/hoard-state.json",
+
+  "hot": {
+    "repository": "/data/hot",
+    "password": "set-via-HOARD_HOT_PASSWORD-env"
+  },
+
+  "cold": {
+    "repository": "s3:https://x0x0.va.idrivee2-1.com/my-backup-bucket",
+    "password": "set-via-HOARD_COLD_PASSWORD-env",
+    "s3_access_key_id": "set-via-HOARD_COLD_S3_ACCESS_KEY_ID-env",
+    "s3_secret_access_key": "set-via-HOARD_COLD_S3_SECRET_ACCESS_KEY-env"
+  },
+
+  "schedule": {
+    "mirror": "02:30",
+    "check": "04:00",
+    "check_weekday": 0,
+    "stale_after": "26h"
+  },
+
+  "retention": {
+    "keep_last": 3,
+    "keep_daily": 7,
+    "keep_weekly": 4,
+    "keep_monthly": 6,
+    "keep_yearly": 1
+  },
+
+  "alert": {
+    "webhook_url": "",
+    "on_stale": true
+  }
+}

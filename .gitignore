@@ -1,0 +1,7 @@
+/hoardd
+/out/
+*.tmp
+hoard.json
+hoard-state.json
+/data/
+.env
