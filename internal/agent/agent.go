@@ -113,7 +113,9 @@ func (a *Agent) Live() Live {
 		elapsed := a.effectiveElapsedLocked()
 		p.SecondsElapsed = int(elapsed.Seconds())
 		p.SecondsRemaining = 0
-		if !a.paused && p.BytesDone > 0 && elapsed > 0 && p.TotalBytes > p.BytesDone {
+		// ETA from the byte rate over effective (un-paused) elapsed; stays
+		// meaningful even while paused since both inputs are frozen.
+		if p.BytesDone > 0 && elapsed > 0 && p.TotalBytes > p.BytesDone {
 			rate := float64(p.BytesDone) / elapsed.Seconds()
 			if rate > 0 {
 				p.SecondsRemaining = int(float64(p.TotalBytes-p.BytesDone) / rate)

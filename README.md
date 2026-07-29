@@ -59,8 +59,13 @@ backup can never quietly rot for months.
 
 - **Two web dashboards** — a server dashboard for the whole fleet and a per-machine
   agent GUI. No config files to hand-edit for day-to-day use.
-- **Live backup progress** — the agent streams restic's progress into a bar with
-  percentage, files/bytes, ETA, and the current file.
+- **Live running-backup view** — watch a backup as it runs: progress bar with
+  percentage, files/bytes, elapsed, and ETA, plus a **terminal-style feed of every
+  file** as it's processed. The server aggregates this **across all clients** in
+  one place.
+- **Pause, resume, cancel** — control any running backup from the agent *or* the
+  server, even though agents bind localhost-only (control rides the client's
+  status reports back to it).
 - **Graphical folder picker** — choose what to back up by browsing your filesystem,
   not by typing absolute paths.
 - **Backup browser** — pick a client → a version → browse its file tree → download
@@ -96,6 +101,21 @@ live progress. The same backup browser is here too, scoped to this machine — a
 its deletes are delegated to the server so they hit e2 as well.
 
 ![Agent dashboard](docs/images/hoard-agent-dashboard.png)
+
+## Watching & controlling live backups
+
+While a backup runs, the agent shows a live panel: progress with a real elapsed
+time and ETA, **pause / resume / cancel** controls, and a terminal-style feed of
+every file being processed (colour-coded new / changed / unchanged).
+
+![Agent running a backup](docs/images/hoard-running-agent.png)
+
+The server rolls this up for the **whole fleet** — one panel per client currently
+backing up, each with the same live feed and controls. Pause or cancel a remote
+client's backup right from here. Since agents bind localhost-only, control travels
+back on the status reports each agent already sends the server every second.
+
+![Server watching all clients](docs/images/hoard-running-server.png)
 
 ## Quick start — server (Docker / TrueNAS)
 
