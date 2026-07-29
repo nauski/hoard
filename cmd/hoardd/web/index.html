@@ -217,6 +217,9 @@ setInterval(refresh, 5000);
 // ---------------- Backup browser ----------------
 function hBytes(b){b=b||0;if(b<1024)return b+" B";const u=["KiB","MiB","GiB","TiB","PiB"];let i=-1;do{b/=1024;i++}while(b>=1024&&i<u.length-1);return b.toFixed(1)+" "+u[i];}
 let bClientHost="", bSnaps=[], bSnap="", bDir="/", delCtx={};
+// short_ids optimistically deleted — filtered out of every reload until the
+// server confirms they're actually gone, so no refresh can resurrect a row.
+let pendingDel=new Set();
 
 async function loadClients(){
   try{
@@ -235,7 +238,7 @@ async function selectClient(host, keepFiles){
   try { const r=await fetch("/api/snapshots"); all=await r.json(); if(!r.ok) throw 0; }
   catch(e){ return; } // transient (e.g. repo busy): keep the current list, don't blank
   if(!Array.isArray(all)) return;
-  bSnaps=all.filter(s=>s.hostname===host).sort((a,b)=>new Date(b.time)-new Date(a.time));
+  bSnaps=all.filter(s=>s.hostname===host && !pendingDel.has(s.short_id)).sort((a,b)=>new Date(b.time)-new Date(a.time));
   renderVersions();
 }
 // Poll until the server is idle (delete/purge job finished), then reconcile the
@@ -285,12 +288,25 @@ function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=
 
 function deleteVersion(id){
   if(!confirm("Delete the ENTIRE version "+id+" (this snapshot) from hot + e2?\nOther versions are unaffected.")) return;
-  // Optimistic: drop the row now, reconcile in the background.
+  // Optimistic: drop the row now and mark it pending so no reload can bring it
+  // back; reconcile once the server confirms it's gone.
+  pendingDel.add(id);
   bSnaps=bSnaps.filter(s=>s.short_id!==id); renderVersions();
   if(bSnap===id){ bSnap=""; bEntries=[]; $("#bFiles").innerHTML=""; }
   fetch("/api/delete-version",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})
-    .then(r=>{ if(!r.ok) throw 0; toast("deleting version "+id+"… (reclaiming space in the background)"); waitIdleThenReload(false); })
-    .catch(()=>{ toast("delete failed — restoring list"); selectClient(bClientHost); });
+    .then(r=>{ if(!r.ok) throw 0; toast("deleting version "+id+"… (reclaiming space in the background)"); reconcileDeleted(id); })
+    .catch(()=>{ pendingDel.delete(id); toast("delete failed — restoring list"); selectClient(bClientHost); });
+}
+// Poll the real snapshot list until the id is actually gone (delete applied),
+// then stop filtering it. Bounded so a failed delete doesn't hide it forever.
+async function reconcileDeleted(id){
+  for(let i=0;i<45;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    let all; try{ const r=await fetch("/api/snapshots"); all=await r.json(); if(!r.ok||!Array.isArray(all)) continue; }catch(e){ continue; }
+    if(!all.some(s=>s.short_id===id)){ break; } // confirmed gone
+  }
+  pendingDel.delete(id);
+  selectClient(bClientHost, true);
 }
 
 // ---- file delete modal ----

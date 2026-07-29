@@ -333,18 +333,29 @@ async function refresh(){
 async function loop(){ await refresh(); setTimeout(loop, running?1000:5000); }
 // ---------------- Backup browser ----------------
 let bSnaps=[], bSnap="", bDir="/", delCtx={}, bEntries=[];
+// short_ids optimistically deleted — filtered out of every reload until the
+// server confirms they're gone, so no refresh can resurrect a row.
+let pendingDel=new Set();
 async function loadVersions(){
   if(running) return; // don't spawn restic against the busy rest-server mid-backup
   let sn;
   try{ const r=await fetch("/api/snapshots"); sn=await r.json(); if(!r.ok) throw 0; }
   catch(e){ if(!bSnaps.length) $("#bVersions").innerHTML='<div class="sub">can\'t reach server</div>'; return; }
   if(!Array.isArray(sn)) return; // transient (repo busy): keep current list
-  bSnaps=sn.sort((a,b)=>new Date(b.time)-new Date(a.time));
+  bSnaps=sn.filter(s=>!pendingDel.has(s.short_id)).sort((a,b)=>new Date(b.time)-new Date(a.time));
   renderVersions();
 }
-// Deletes run on the server (delegated); the agent can't see that job's state,
-// so reload the list a few times over ~12s to settle on the final result.
-function reloadSoon(){ [500,2000,5000,9000,12000].forEach(ms=>setTimeout(loadVersions,ms)); }
+// Deletes are delegated to the server; poll the real list until the id is gone
+// (delete applied), then stop filtering it. Bounded against a failed delete.
+async function reconcileDeleted(id){
+  for(let i=0;i<45;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    let sn; try{ const r=await fetch("/api/snapshots"); sn=await r.json(); if(!r.ok||!Array.isArray(sn)) continue; }catch(e){ continue; }
+    if(!sn.some(s=>s.short_id===id)){ break; }
+  }
+  pendingDel.delete(id);
+  loadVersions();
+}
 function renderVersions(){
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no backups yet</div>'; return; }
   $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
@@ -378,11 +389,13 @@ function renderFiles(){
 function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=0?"/":d.slice(0,i); }
 function deleteVersion(id){
   if(!confirm("Delete the ENTIRE version "+id+" from hot + e2?\nOther versions are unaffected.")) return;
-  // Optimistic: drop the row now, reconcile in the background.
+  // Optimistic: drop the row, mark pending so no reload resurrects it.
+  pendingDel.add(id);
   bSnaps=bSnaps.filter(s=>s.short_id!==id); renderVersions();
   if(bSnap===id){ bSnap=""; bEntries=[]; $("#bFiles").innerHTML=""; }
   fetch("/api/delete-version",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})
-    .then(async r=>{ const j=await r.json(); $("#msg").textContent=r.ok?("deleting version "+id+"… (reclaiming space)"):("error: "+(j.error||r.status)); reloadSoon(); });
+    .then(async r=>{ if(!r.ok){ const j=await r.json(); pendingDel.delete(id); $("#msg").textContent="error: "+(j.error||r.status); loadVersions(); return; }
+      $("#msg").textContent="deleting version "+id+"… (reclaiming space)"; reconcileDeleted(id); });
 }
 function openDel(path,name){ delCtx={path,name}; $("#delPath").textContent=path; $("#delConfirmName").textContent=name;
   document.querySelector('input[name=delscope][value=version]').checked=true; $("#delConfirm").value=""; onScope(); $("#delMsg").textContent=""; $("#delBg").style.display="flex"; }
@@ -398,13 +411,18 @@ async function doDelete(){
   // Optimistic: remove the file row now, keep the folder open.
   bEntries=bEntries.filter(e=>e.path!==path); renderFiles();
   const r=await fetch("/api/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(r.ok){ closeDel(); $("#msg").textContent=all?"purging from all versions… (reclaiming space)":"removing from this version…"; reloadSoon(); }
+  if(r.ok){ closeDel(); $("#msg").textContent=all?"purging from all versions… (reclaiming space)":"removing from this version…";
+    // The file row is already gone optimistically; refresh the version list once
+    // the rewrite settles (all-versions purge assigns new snapshot IDs).
+    setTimeout(loadVersions,3000); setTimeout(loadVersions,9000); }
   else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); $("#delGo").disabled=false; browseSnap(bDir); }
 }
 
 load().then(loop);
+// Event-driven: the version list is (re)loaded on first load, when a backup
+// finishes (see refresh()), and after a delete reconciles — never on a blind
+// timer that would fight optimistic edits.
 loadVersions();
-setInterval(loadVersions, 15000);
 </script>
 </body>
 </html>
