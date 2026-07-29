@@ -66,11 +66,7 @@ in {
           "HOARD_AGENT_REPOSITORY=${cfg.repository}"
           "HOARD_AGENT_PASSWORD_FILE=${cfg.passwordFile}"
         ] ++ lib.optional (cfg.host != "") "HOARD_AGENT_HOST=${cfg.host}";
-        ExecStart = ''
-          ${lib.getExe cfg.package} \
-            -listen ${cfg.listen} \
-            -restic ${lib.getExe cfg.restic}
-        '';
+        ExecStart = "${lib.getExe cfg.package} -listen ${cfg.listen} -restic ${lib.getExe cfg.restic}";
         Restart = "on-failure";
         RestartSec = 5;
       };
