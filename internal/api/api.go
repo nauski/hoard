@@ -28,12 +28,14 @@ type Server struct {
 	log    *slog.Logger
 	webFS  fs.FS
 	client *http.Client
+	live   *liveStore
 }
 
 func New(cfg *config.Config, sched *scheduler.Scheduler, store *state.Store, hot, cold *restic.Client, log *slog.Logger, webFS fs.FS) *Server {
 	return &Server{
 		cfg: cfg, sched: sched, store: store, hot: hot, cold: cold, log: log, webFS: webFS,
 		client: &http.Client{Timeout: 10 * time.Second},
+		live:   newLiveStore(),
 	}
 }
 
@@ -50,6 +52,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("POST /api/purge", s.handlePurge)
 	mux.HandleFunc("POST /api/delete-version", s.handleDeleteVersion)
+	// Live running-backup aggregation across all clients.
+	mux.HandleFunc("POST /api/report", s.handleReport)
+	mux.HandleFunc("GET /api/running", s.handleRunning)
+	mux.HandleFunc("POST /api/clients/control", s.handleClientControl)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

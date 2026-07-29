@@ -50,6 +50,17 @@
   .modal input[type=text]{width:100%;background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;margin-top:6px}
   .mfoot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between}
   .warn{color:var(--warn)} .danger-text{color:var(--bad)}
+  .rclient{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:12px}
+  .rclient h3{margin:0 0 8px;font-size:14px;display:flex;align-items:center;gap:10px}
+  .pbar{height:9px;background:#0d1117;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .pfill{height:100%;width:0;background:linear-gradient(90deg,#3fb950,#58a6ff);transition:width .4s ease}
+  .pstats{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .pstats b{color:var(--fg)}
+  .ctrls{display:flex;gap:8px;margin:10px 0 4px;align-items:center}
+  .mini2{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer}
+  .mini2.danger{border-color:rgba(248,81,73,.5);color:var(--bad)}
+  .term{background:#010409;border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:220px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#c9d1d9;margin-top:10px}
+  .term .a-new{color:#3fb950}.term .a-changed{color:#d29922}.term .a-unchanged{color:#6e7681}.term .a-error{color:#f85149}.term .a-meta{color:#58a6ff}
 </style>
 </head>
 <body>
@@ -64,6 +75,11 @@
 
 <main>
   <div class="row" id="jobCards"></div>
+
+  <div class="card" id="runningCard" style="display:none">
+    <h2>Running backups</h2>
+    <div id="runningList"></div>
+  </div>
 
   <div class="card">
     <h2>Clients</h2>
@@ -306,6 +322,68 @@ function toast(m){ const el=$("#bHint"); el.textContent=m; setTimeout(()=>{ if(b
 
 loadClients();
 setInterval(loadClients, 8000);
+
+// ---------------- Running backups (all clients) ----------------
+function hDur(s){s=Math.max(0,Math.round(s||0));if(s<60)return s+"s";const m=Math.floor(s/60),ss=s%60;if(m<60)return m+"m "+ss+"s";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
+function actionClass(line){const a=(line.split(/\s+/)[0]||"").toLowerCase();
+  if(a==="new")return"a-new";if(a==="changed")return"a-changed";if(a==="unchanged"||a==="unmodified")return"a-unchanged";
+  if(a==="error")return"a-error";if(line.startsWith("—"))return"a-meta";return"";}
+function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+async function rctrl(host,action){
+  await fetch("/api/clients/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host,action})});
+  setTimeout(loadRunning,400);
+}
+function paintTerm(host,lines){
+  const term=document.getElementById("term-"+host); if(!term) return;
+  if(term.dataset.n===String(lines.length)) return;
+  const atBottom=term.scrollHeight-term.scrollTop-term.clientHeight<40;
+  term.innerHTML=lines.map(l=>`<div class="${actionClass(l)}">${esc(l)}</div>`).join("");
+  term.dataset.n=String(lines.length);
+  if(atBottom) term.scrollTop=term.scrollHeight;
+}
+async function loadRunning(){
+  let list;
+  try{ list=await (await fetch("/api/running")).json(); }catch(e){ return; }
+  const active=(list||[]).filter(c=>c.live && c.live.running);
+  const card=$("#runningCard");
+  if(!active.length){ card.style.display="none"; $("#runningList").innerHTML=""; return; }
+  card.style.display="";
+  const have=new Set(active.map(c=>c.host));
+  // build/refresh a panel per host
+  active.sort((a,b)=>a.host<b.host?-1:1).forEach(c=>{
+    const L=c.live, p=L.progress||{}, pct=Math.round((p.percent_done||0)*100);
+    let el=document.getElementById("rc-"+c.host);
+    if(!el){
+      el=document.createElement("div"); el.className="rclient"; el.id="rc-"+c.host;
+      el.innerHTML=`<h3><span class="mono" id="rh-${c.host}"></span> <span class="badge" id="rb-${c.host}"></span></h3>
+        <div class="pbar"><div class="pfill" id="rf-${c.host}"></div></div>
+        <div class="pstats"><span><b id="rp-${c.host}">0%</b> done</span><span>files <b id="rfl-${c.host}">0/0</b></span>
+          <span>data <b id="rby-${c.host}">0/0</b></span><span>elapsed <b id="rel-${c.host}">0s</b></span><span>ETA <b id="ret-${c.host}">—</b></span></div>
+        <div class="ctrls">
+          <button class="mini2" id="rpause-${c.host}" onclick="rctrl('${c.host}','pause')">⏸ Pause</button>
+          <button class="mini2" id="rresume-${c.host}" style="display:none" onclick="rctrl('${c.host}','resume')">▶ Resume</button>
+          <button class="mini2 danger" onclick="rctrl('${c.host}','cancel')">✕ Cancel</button>
+        </div>
+        <div class="term" id="term-${c.host}"></div>`;
+      $("#runningList").appendChild(el);
+    }
+    $("#rh-"+c.host).textContent=c.host;
+    const badge=$("#rb-"+c.host); badge.textContent=L.paused?"paused":"backing up"; badge.className="badge "+(L.paused?"b-warn":"b-ok");
+    const f=$("#rf-"+c.host); f.style.width=pct+"%"; f.style.opacity=L.paused?0.5:1;
+    $("#rp-"+c.host).textContent=pct+"%";
+    $("#rfl-"+c.host).textContent=(p.files_done||0)+" / "+(p.total_files||0);
+    $("#rby-"+c.host).textContent=hBytes(p.bytes_done)+" / "+hBytes(p.total_bytes);
+    $("#rel-"+c.host).textContent=hDur(p.seconds_elapsed);
+    $("#ret-"+c.host).textContent=p.seconds_remaining>0?hDur(p.seconds_remaining):"—";
+    $("#rpause-"+c.host).style.display=L.paused?"none":"";
+    $("#rresume-"+c.host).style.display=L.paused?"":"none";
+    paintTerm(c.host, L.activity||[]);
+  });
+  // remove panels for hosts no longer running
+  [...$("#runningList").children].forEach(el=>{ const h=el.id.slice(3); if(!have.has(h)) el.remove(); });
+}
+loadRunning();
+setInterval(loadRunning, 1500);
 </script>
 </body>
 </html>

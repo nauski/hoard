@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/nauski/hoard/internal/restic"
 )
 
 // Server exposes the agent's web GUI and JSON API.
@@ -33,6 +31,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/snapshots", s.snapshots)
 	mux.HandleFunc("GET /api/browse", s.browseDir)
 	mux.HandleFunc("POST /api/backup", s.backup)
+	mux.HandleFunc("POST /api/backup/pause", s.control("pause"))
+	mux.HandleFunc("POST /api/backup/resume", s.control("resume"))
+	mux.HandleFunc("POST /api/backup/cancel", s.control("cancel"))
 	// Backup browser: ls/download read the hot repo directly; deletes are
 	// delegated to the server (only it can reach e2).
 	mux.HandleFunc("GET /api/ls", s.ls)
@@ -65,22 +66,42 @@ func (s *Server) setConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 type statusResponse struct {
-	Config   Config           `json:"config"`
-	Running  bool             `json:"running"`
-	LastRun  RunResult        `json:"last_run"`
-	Progress *restic.Progress `json:"progress,omitempty"`
-	Now      time.Time        `json:"now"`
+	Config  Config    `json:"config"`
+	Running bool      `json:"running"`
+	LastRun RunResult `json:"last_run"`
+	Live    Live      `json:"live"`
+	Now     time.Time `json:"now"`
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	last, running := s.agent.LastRun()
 	writeJSON(w, http.StatusOK, statusResponse{
-		Config:   s.agent.GetConfig(),
-		Running:  running,
-		LastRun:  last,
-		Progress: s.agent.Progress(),
-		Now:      time.Now(),
+		Config:  s.agent.GetConfig(),
+		Running: running,
+		LastRun: last,
+		Live:    s.agent.Live(),
+		Now:     time.Now(),
 	})
+}
+
+// control applies pause/resume/cancel to the running backup.
+func (s *Server) control(action string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		switch action {
+		case "pause":
+			err = s.agent.Pause()
+		case "resume":
+			err = s.agent.Resume()
+		case "cancel":
+			err = s.agent.Cancel()
+		}
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": action})
+	}
 }
 
 func (s *Server) snapshots(w http.ResponseWriter, r *http.Request) {

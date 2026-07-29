@@ -48,6 +48,10 @@
   .danger-text{color:var(--bad)}
   .modal .mbody{padding:16px;overflow-y:auto}
   .modal .mbody label{display:flex;gap:8px;align-items:flex-start;padding:8px 0;cursor:pointer}
+  .ctrls{display:flex;gap:8px;margin:12px 0 4px;align-items:center}
+  .term{background:#010409;border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:280px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#c9d1d9;margin-top:10px}
+  .term .a-new{color:#3fb950}.term .a-changed{color:#d29922}.term .a-unchanged{color:#6e7681}.term .a-error{color:#f85149}.term .a-meta{color:#58a6ff}
+  .term .path{color:#c9d1d9}
   .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
   .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(640px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
   .modal .mhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
@@ -110,7 +114,7 @@
   </div>
 
   <div class="card" id="progressCard" style="display:none">
-    <h2>Backing up…</h2>
+    <h2 id="runTitle">Running backup</h2>
     <div class="progress">
       <div class="pbar"><div id="pfill" class="pfill"></div></div>
       <div class="pstats">
@@ -120,8 +124,14 @@
         <span>elapsed <b id="pelapsed">0s</b></span>
         <span>ETA <b id="peta">—</b></span>
       </div>
-      <div id="pcur" class="pcur"></div>
     </div>
+    <div class="ctrls">
+      <button id="btnPause" class="secondary" onclick="ctrl('pause')">⏸ Pause</button>
+      <button id="btnResume" class="secondary" onclick="ctrl('resume')" style="display:none">▶ Resume</button>
+      <button id="btnCancel" class="secondary" onclick="ctrl('cancel')" style="border-color:var(--bad);color:var(--bad)">✕ Cancel</button>
+      <span id="runMsg" class="sub"></span>
+    </div>
+    <div id="term" class="term"></div>
   </div>
 
   <div class="card">
@@ -254,29 +264,56 @@ async function backup(){
   setTimeout(refresh,600);
 }
 let running=false;
-function renderProgress(p){
+function actionClass(line){
+  const a=(line.split(/\s+/)[0]||"").toLowerCase();
+  if(a==="new")return"a-new"; if(a==="changed")return"a-changed";
+  if(a==="unchanged"||a==="unmodified")return"a-unchanged"; if(a==="error")return"a-error";
+  if(line.startsWith("—"))return"a-meta"; return"";
+}
+function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function renderLive(live){
   const card=$("#progressCard");
-  if(!p){ card.style.display="none"; return; }
+  if(!live || !live.running){ card.style.display="none"; return; }
   card.style.display="";
+  const p=live.progress||{};
   const pct=Math.round((p.percent_done||0)*100);
   $("#pfill").style.width=pct+"%";
+  $("#pfill").style.opacity=live.paused?0.5:1;
   $("#ppct").textContent=pct+"%";
   $("#pfiles").textContent=(p.files_done||0)+" / "+(p.total_files||0);
   $("#pbytes").textContent=hBytes(p.bytes_done)+" / "+hBytes(p.total_bytes);
   $("#pelapsed").textContent=hDur(p.seconds_elapsed);
   $("#peta").textContent=p.seconds_remaining>0?hDur(p.seconds_remaining):"—";
-  const cur=(p.current_files||[])[0]||"";
-  $("#pcur").textContent=cur?("reading "+cur):"";
+  $("#runTitle").textContent=live.paused?"Running backup — paused":"Running backup";
+  $("#btnPause").style.display=live.paused?"none":"";
+  $("#btnResume").style.display=live.paused?"":"none";
+  // terminal: only re-render/scroll when the line count changed
+  const term=$("#term");
+  const lines=live.activity||[];
+  if(term.dataset.n!=String(lines.length)){
+    const atBottom = term.scrollHeight-term.scrollTop-term.clientHeight < 40;
+    term.innerHTML=lines.map(l=>`<div class="${actionClass(l)}">${esc(l)}</div>`).join("");
+    term.dataset.n=String(lines.length);
+    if(atBottom) term.scrollTop=term.scrollHeight;
+  }
+}
+async function ctrl(action){
+  $("#runMsg").textContent=action+"…";
+  const r=await fetch("/api/backup/"+action,{method:"POST"});
+  const j=await r.json();
+  $("#runMsg").textContent=r.ok?"":("error: "+(j.error||r.status));
+  setTimeout(refresh,300);
 }
 async function refresh(){
   try{
     const st=await (await fetch("/api/status")).json();
-    running=!!st.running;
+    const live=st.live||{running:st.running};
+    running=!!live.running;
     const run=$("#run");
-    if(running){ run.textContent="backing up…"; run.className="badge b-run"; }
+    if(running){ run.textContent=live.paused?"paused":"backing up…"; run.className="badge b-run"; }
     else { run.textContent="idle"; run.className="badge b-idle"; }
     $("#now").disabled=running;
-    renderProgress(running?st.progress:null);
+    renderLive(live);
     const lr=st.last_run;
     if(lr && lr.started_at && !String(lr.started_at).startsWith("0001")){
       const b=lr.ok?'<span class="badge b-ok">ok</span>':'<span class="badge b-bad">failed</span>';

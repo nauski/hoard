@@ -5,17 +5,20 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
@@ -57,6 +60,95 @@ type Agent struct {
 	running  bool
 	lastRun  RunResult
 	progress *restic.Progress // live progress while running, nil when idle
+
+	// live control/observation state for the running backup
+	cancel    context.CancelFunc
+	proc      *os.Process
+	paused    bool
+	startedAt time.Time
+	activity  []string // rolling per-file log tail (terminal view)
+}
+
+// maxActivity is how many recent per-file lines the agent keeps for the UI.
+const maxActivity = 300
+
+// Live is a snapshot of the running backup for the dashboard and for reporting
+// to the server.
+type Live struct {
+	Running   bool             `json:"running"`
+	Paused    bool             `json:"paused"`
+	StartedAt time.Time        `json:"started_at"`
+	Progress  *restic.Progress `json:"progress,omitempty"`
+	Activity  []string         `json:"activity,omitempty"`
+}
+
+// Live returns the current running-backup state (safe copy).
+func (a *Agent) Live() Live {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	l := Live{Running: a.running, Paused: a.paused, StartedAt: a.startedAt}
+	if a.progress != nil {
+		p := *a.progress
+		l.Progress = &p
+	}
+	if len(a.activity) > 0 {
+		l.Activity = append([]string(nil), a.activity...)
+	}
+	return l
+}
+
+// Pause suspends the running restic process (SIGSTOP). Best-effort.
+func (a *Agent) Pause() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.proc == nil {
+		return fmt.Errorf("no backup running")
+	}
+	if err := a.proc.Signal(syscall.SIGSTOP); err != nil {
+		return err
+	}
+	a.paused = true
+	a.appendActivityLocked("— paused —")
+	return nil
+}
+
+// Resume continues a paused restic process (SIGCONT).
+func (a *Agent) Resume() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.proc == nil {
+		return fmt.Errorf("no backup running")
+	}
+	if err := a.proc.Signal(syscall.SIGCONT); err != nil {
+		return err
+	}
+	a.paused = false
+	a.appendActivityLocked("— resumed —")
+	return nil
+}
+
+// Cancel stops the running backup (resuming first if paused, so the kill lands).
+func (a *Agent) Cancel() error {
+	a.mu.Lock()
+	proc, cancel, paused := a.proc, a.cancel, a.paused
+	if cancel == nil {
+		a.mu.Unlock()
+		return fmt.Errorf("no backup running")
+	}
+	a.appendActivityLocked("— cancelling —")
+	a.mu.Unlock()
+	if paused && proc != nil {
+		_ = proc.Signal(syscall.SIGCONT)
+	}
+	cancel()
+	return nil
+}
+
+func (a *Agent) appendActivityLocked(line string) {
+	a.activity = append(a.activity, line)
+	if len(a.activity) > maxActivity {
+		a.activity = a.activity[len(a.activity)-maxActivity:]
+	}
 }
 
 // RunResult records the outcome of the most recent backup.
@@ -132,6 +224,57 @@ func (a *Agent) ServerBaseURL() string {
 		return ""
 	}
 	return u.Scheme + "://" + u.Hostname() + ":8080"
+}
+
+// reportLoop pushes the agent's live state to the server every second during a
+// backup, and applies any control command the server hands back (pause/resume/
+// cancel). This is how the server both sees and controls client backups even
+// though agents bind localhost-only: the agent always initiates the connection.
+func (a *Agent) reportLoop(ctx context.Context) {
+	base := a.ServerBaseURL()
+	if base == "" {
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			a.report(client, base, &Live{Running: false}) // final: mark idle
+			return
+		case <-t.C:
+			live := a.Live()
+			switch a.report(client, base, &live) {
+			case "pause":
+				_ = a.Pause()
+			case "resume":
+				_ = a.Resume()
+			case "cancel":
+				_ = a.Cancel()
+			}
+		}
+	}
+}
+
+// report POSTs one live snapshot to the server and returns any queued command.
+func (a *Agent) report(client *http.Client, base string, live *Live) string {
+	body, _ := json.Marshal(map[string]any{"host": a.Host(), "live": live})
+	req, err := http.NewRequest(http.MethodPost, base+"/api/report", bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Command string `json:"command"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return out.Command
 }
 
 // Ls lists one directory level inside a snapshot on the server (hot repo).
@@ -220,20 +363,31 @@ func (a *Agent) resticClient() (*restic.Client, error) {
 // Backup runs one backup now. It is safe to call concurrently; a second call
 // while one is running returns an error.
 func (a *Agent) Backup(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
 	a.mu.Lock()
 	if a.running {
 		a.mu.Unlock()
+		cancel()
 		return fmt.Errorf("a backup is already running")
 	}
 	a.running = true
+	a.paused = false
+	a.cancel = cancel
+	a.startedAt = time.Now()
+	a.activity = nil
+	a.progress = nil
 	cfg := a.cfg
 	a.mu.Unlock()
 
 	defer func() {
 		a.mu.Lock()
 		a.running = false
+		a.paused = false
 		a.progress = nil // clear live progress once the run ends
+		a.proc = nil
+		a.cancel = nil
 		a.mu.Unlock()
+		cancel()
 	}()
 
 	start := time.Now()
@@ -248,20 +402,38 @@ func (a *Agent) Backup(ctx context.Context) error {
 		return err
 	}
 
-	onProgress := func(p restic.Progress) {
-		a.mu.Lock()
-		pc := p
-		a.progress = &pc
-		a.mu.Unlock()
+	hooks := restic.BackupHooks{
+		OnProgress: func(p restic.Progress) {
+			a.mu.Lock()
+			pc := p
+			a.progress = &pc
+			a.mu.Unlock()
+		},
+		OnActivity: func(action, item string) {
+			a.mu.Lock()
+			a.appendActivityLocked(action + "  " + item)
+			a.mu.Unlock()
+		},
+		OnStart: func(p *os.Process) {
+			a.mu.Lock()
+			a.proc = p
+			a.mu.Unlock()
+		},
 	}
-	summary, out, err := cl.Backup(ctx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, onProgress)
+	go a.reportLoop(runCtx) // stream live state to the server (and pick up commands)
+	summary, out, err := cl.Backup(runCtx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, hooks)
 	rr.EndedAt = time.Now()
 	rr.Output = out
 	rr.Summary = summary
 	if err != nil {
 		rr.OK = false
-		rr.Message = err.Error()
-		a.log.Error("backup failed", "err", err)
+		if runCtx.Err() == context.Canceled {
+			rr.Message = "cancelled"
+			a.log.Info("backup cancelled")
+		} else {
+			rr.Message = err.Error()
+			a.log.Error("backup failed", "err", err)
+		}
 		a.storeRun(rr)
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"sort"
@@ -137,16 +138,28 @@ type Progress struct {
 	CurrentFiles     []string `json:"current_files"`
 }
 
+// BackupHooks are optional callbacks fired during a backup so callers can show
+// live status, stream per-file activity, and control the process.
+type BackupHooks struct {
+	// OnProgress fires for each "status" message (a few times/sec).
+	OnProgress func(Progress)
+	// OnActivity fires for each per-file "verbose_status" message with the
+	// restic action ("new"/"changed"/"unchanged"/…) and the file path.
+	OnActivity func(action, item string)
+	// OnStart fires once with the restic process, so the caller can suspend
+	// (SIGSTOP/SIGCONT) or otherwise signal it.
+	OnStart func(*os.Process)
+}
+
 // Backup backs up the given paths to this repo. excludes are restic --exclude
 // patterns; host overrides the snapshot hostname; tags are applied to the
-// snapshot. If onProgress is non-nil it is called for each restic "status"
-// message (roughly a few times per second) so callers can show live progress.
-// It parses and returns the final summary.
-func (c *Client) Backup(ctx context.Context, paths, excludes []string, host string, tags []string, onProgress func(Progress)) (*BackupResult, string, error) {
+// snapshot. --verbose is passed so every file emits a verbose_status event.
+// Cancel by cancelling ctx. It parses and returns the final summary.
+func (c *Client) Backup(ctx context.Context, paths, excludes []string, host string, tags []string, hooks BackupHooks) (*BackupResult, string, error) {
 	if len(paths) == 0 {
 		return nil, "", fmt.Errorf("no paths configured to back up")
 	}
-	args := []string{"backup", "--json"}
+	args := []string{"backup", "--json", "--verbose"}
 	if host != "" {
 		args = append(args, "--host", host)
 	}
@@ -169,11 +182,13 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 	if err := cmd.Start(); err != nil {
 		return nil, "", err
 	}
+	if hooks.OnStart != nil && cmd.Process != nil {
+		hooks.OnStart(cmd.Process)
+	}
 
-	// Stream stdout line by line: dispatch "status" to the callback and keep the
-	// last "summary" for the return value. We retain only a short tail of raw
-	// output for diagnostics rather than buffering the whole (potentially huge)
-	// status stream.
+	// Stream stdout line by line: "status" → progress, "verbose_status" → the
+	// per-file activity feed, "summary" → the result. Only a short tail of raw
+	// output is retained for diagnostics.
 	var result *BackupResult
 	var tailLines []string
 	sc := bufio.NewScanner(stdout)
@@ -188,19 +203,40 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 		}
 		switch probe.MessageType {
 		case "status":
-			if onProgress != nil {
+			if hooks.OnProgress != nil {
 				var p Progress
 				if json.Unmarshal(line, &p) == nil {
-					onProgress(p)
+					hooks.OnProgress(p)
 				}
 			}
+		case "verbose_status":
+			if hooks.OnActivity != nil {
+				var v struct {
+					Action string `json:"action"`
+					Item   string `json:"item"`
+				}
+				if json.Unmarshal(line, &v) == nil && v.Item != "" {
+					hooks.OnActivity(v.Action, v.Item)
+				}
+			}
+		case "error":
+			if hooks.OnActivity != nil {
+				var e struct {
+					Item  string `json:"item"`
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if json.Unmarshal(line, &e) == nil {
+					hooks.OnActivity("error", e.Item+": "+e.Error.Message)
+				}
+			}
+			tailLines = appendTail(tailLines, string(line))
 		case "summary":
 			var s BackupResult
 			if json.Unmarshal(line, &s) == nil {
 				result = &s
 			}
-			tailLines = appendTail(tailLines, string(line))
-		default:
 			tailLines = appendTail(tailLines, string(line))
 		}
 	}
