@@ -108,6 +108,70 @@ func (c *Client) CopyFrom(ctx context.Context, src config.Repo) (string, error) 
 	return out, err
 }
 
+// BackupResult summarizes a completed backup (parsed from restic --json).
+type BackupResult struct {
+	SnapshotID      string `json:"snapshot_id"`
+	FilesNew        int    `json:"files_new"`
+	FilesChanged    int    `json:"files_changed"`
+	DataAddedPacked uint64 `json:"data_added_packed"`
+	TotalFiles      int    `json:"total_files_processed"`
+	TotalBytes      uint64 `json:"total_bytes_processed"`
+}
+
+// Backup backs up the given paths to this repo. excludes are restic --exclude
+// patterns; host overrides the snapshot hostname; tags are applied to the
+// snapshot. It parses the final summary message from restic's JSON output.
+func (c *Client) Backup(ctx context.Context, paths, excludes []string, host string, tags []string) (*BackupResult, string, error) {
+	if len(paths) == 0 {
+		return nil, "", fmt.Errorf("no paths configured to back up")
+	}
+	args := []string{"backup", "--json"}
+	if host != "" {
+		args = append(args, "--host", host)
+	}
+	for _, t := range tags {
+		args = append(args, "--tag", t)
+	}
+	for _, e := range excludes {
+		args = append(args, "--exclude", e)
+	}
+	args = append(args, paths...)
+
+	cmd := exec.CommandContext(ctx, c.bin, args...)
+	cmd.Env = append(cmd.Environ(), c.env()...)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	err := cmd.Run()
+	// restic streams one JSON object per line; the last "summary" carries results.
+	res := parseBackupSummary(out.String())
+	if err != nil {
+		msg := strings.TrimSpace(errb.String())
+		return res, tail(out.String(), 2000), fmt.Errorf("restic backup: %w: %s", err, msg)
+	}
+	return res, tail(out.String(), 2000), nil
+}
+
+func parseBackupSummary(stdout string) *BackupResult {
+	sc := bufio.NewScanner(strings.NewReader(stdout))
+	sc.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	var res *BackupResult
+	for sc.Scan() {
+		line := sc.Bytes()
+		var probe struct {
+			MessageType string `json:"message_type"`
+		}
+		if json.Unmarshal(line, &probe) != nil || probe.MessageType != "summary" {
+			continue
+		}
+		var s BackupResult
+		if json.Unmarshal(line, &s) == nil {
+			res = &s
+		}
+	}
+	return res
+}
+
 // Check verifies repository integrity. readData also re-reads a subset of pack
 // files (slower, stronger); pass "" to skip, or "5%" for a sampled read.
 func (c *Client) Check(ctx context.Context, readDataSubset string) (string, error) {

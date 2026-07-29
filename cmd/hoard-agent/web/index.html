@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hoard agent — backup this machine</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  header .host { color:var(--muted); font-size:12px; margin-left:auto; }
+  main { padding:24px; max-width:820px; margin:0 auto; display:grid; gap:20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input[type=text] { width:100%; background:#0d1117; border:1px solid var(--line); border-radius:8px; color:var(--fg); padding:8px 10px; font-family:ui-monospace,monospace; font-size:13px; }
+  .list { display:flex; flex-direction:column; gap:6px; }
+  .list .row { display:flex; gap:8px; }
+  .list .row input { flex:1; }
+  .x { background:transparent; border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:0 10px; cursor:pointer; }
+  .add { background:transparent; border:1px dashed var(--line); color:var(--accent); border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px; align-self:flex-start; margin-top:6px; }
+  button.primary { background:var(--accent); color:#0d1117; border:0; border-radius:8px; padding:9px 16px; font-weight:600; cursor:pointer; }
+  button.primary:disabled { opacity:.5; cursor:not-allowed; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:9px 16px; font-weight:600; cursor:pointer; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .b-ok{background:rgba(63,185,80,.15);color:var(--ok)} .b-bad{background:rgba(248,81,73,.15);color:var(--bad)}
+  .b-idle{background:rgba(139,148,158,.15);color:var(--muted)} .b-run{background:rgba(210,153,34,.15);color:var(--warn)}
+  table{width:100%;border-collapse:collapse} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);font-size:13px}
+  th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase}
+  .sub{color:var(--muted);font-size:12px} .mono{font-family:ui-monospace,monospace}
+  .grid2{display:grid;grid-template-columns:1fr 160px;gap:16px}
+  .msg{font-size:12px;margin-top:8px}
+  .foot{color:var(--muted);font-size:12px;text-align:center;padding-bottom:24px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🗄️ hoard agent</h1>
+  <span id="run" class="badge b-idle">idle</span>
+  <span class="host">this machine: <b id="host">—</b></span>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Server</h2>
+    <label>Backup server (restic REST URL)</label>
+    <input id="repo" type="text" placeholder="rest:http://truenas:8000/hot" />
+    <div class="grid2">
+      <div>
+        <label>Password file (leave blank to use RESTIC_PASSWORD env)</label>
+        <input id="pwfile" type="text" placeholder="/run/secrets/hoard_hot_password" />
+      </div>
+      <div>
+        <label>Daily backup time (HH:MM, blank = manual only)</label>
+        <input id="sched" type="text" placeholder="21:00" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>What to back up</h2>
+    <div id="paths" class="list"></div>
+    <button class="add" onclick="addRow('paths','')">+ add path</button>
+  </div>
+
+  <div class="card">
+    <h2>Excludes (restic patterns)</h2>
+    <div id="excludes" class="list"></div>
+    <button class="add" onclick="addRow('excludes','')">+ add exclude</button>
+  </div>
+
+  <div class="card">
+    <div class="bar">
+      <button id="save" class="ghost" onclick="save()">Save settings</button>
+      <button id="now" class="primary" onclick="backup()">Back up now</button>
+      <span id="msg" class="msg sub"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Last backup</h2>
+    <div id="last" class="sub">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Snapshots on server (this machine)</h2>
+    <table>
+      <thead><tr><th>ID</th><th>When</th><th>Paths</th></tr></thead>
+      <tbody id="snaps"><tr><td colspan="3" class="sub">loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="foot">hoard agent · pushes to your hoard server · status refreshes every 5s</div>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+const fmt=t=>t&&!String(t).startsWith("0001")?new Date(t).toLocaleString():"never";
+
+function addRow(kind,val){
+  const box=$("#"+kind);
+  const row=document.createElement("div"); row.className="row";
+  const inp=document.createElement("input"); inp.type="text"; inp.value=val||"";
+  inp.placeholder = kind==="paths" ? "/home/me/Documents" : "**/node_modules";
+  const del=document.createElement("button"); del.className="x"; del.textContent="✕";
+  del.onclick=()=>row.remove();
+  row.appendChild(inp); row.appendChild(del); box.appendChild(row);
+}
+function readList(kind){ return [...document.querySelectorAll("#"+kind+" input")].map(i=>i.value.trim()).filter(Boolean); }
+
+async function load(){
+  const c=await (await fetch("/api/config")).json();
+  $("#repo").value=c.repository||""; $("#pwfile").value=c.password_file||"";
+  $("#sched").value=c.schedule||""; $("#host").textContent=c.host||"—";
+  $("#paths").innerHTML=""; (c.paths||[]).forEach(p=>addRow("paths",p)); if(!(c.paths||[]).length) addRow("paths","");
+  $("#excludes").innerHTML=""; (c.excludes||[]).forEach(e=>addRow("excludes",e)); if(!(c.excludes||[]).length) addRow("excludes","");
+}
+async function save(){
+  const body={ repository:$("#repo").value.trim(), password_file:$("#pwfile").value.trim(),
+    schedule:$("#sched").value.trim(), paths:readList("paths"), excludes:readList("excludes") };
+  const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  $("#msg").textContent = r.ok ? "saved ✓" : "save failed";
+  setTimeout(()=>$("#msg").textContent="",2500);
+}
+async function backup(){
+  await save();
+  $("#msg").textContent="starting backup…";
+  const r=await fetch("/api/backup",{method:"POST"});
+  const j=await r.json();
+  $("#msg").textContent = r.ok ? "backup started" : ("error: "+(j.error||r.status));
+  setTimeout(refresh,600);
+}
+async function refresh(){
+  try{
+    const st=await (await fetch("/api/status")).json();
+    const run=$("#run");
+    if(st.running){ run.textContent="backing up…"; run.className="badge b-run"; }
+    else { run.textContent="idle"; run.className="badge b-idle"; }
+    $("#now").disabled=st.running;
+    const lr=st.last_run;
+    if(lr && lr.started_at && !String(lr.started_at).startsWith("0001")){
+      const b=lr.ok?'<span class="badge b-ok">ok</span>':'<span class="badge b-bad">failed</span>';
+      $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='mono'>"+(lr.message||"")+"</span>";
+    }
+  }catch(e){}
+  try{
+    const sn=await (await fetch("/api/snapshots")).json();
+    const rows=(Array.isArray(sn)?sn:[]).slice(0,10);
+    $("#snaps").innerHTML = rows.length ? rows.map(s=>
+      `<tr><td class="mono">${s.short_id||s.id.slice(0,8)}</td><td>${fmt(s.time)}</td><td class="sub mono">${(s.paths||[]).join(", ")}</td></tr>`
+    ).join("") : '<tr><td colspan="3" class="sub">no snapshots yet</td></tr>';
+  }catch(e){ $("#snaps").innerHTML='<tr><td colspan="3" class="sub">can\'t reach server</td></tr>'; }
+}
+load().then(refresh);
+setInterval(refresh,5000);
+</script>
+</body>
+</html>
