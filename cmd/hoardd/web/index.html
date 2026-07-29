@@ -4,13 +4,16 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>hoard — backup control</title>
+<script>(function(){try{var s=localStorage.getItem('hoard-theme');var t=s||((window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <style>
-  :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --accent:#58a6ff; }
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --accent:#58a6ff; --accent-fg:#0d1117; --sunken:#0d1117; --term-bg:#010409; --term-fg:#c9d1d9; }
+  :root[data-theme="light"] { color-scheme: light; --bg:#f6f8fa; --panel:#ffffff; --line:#d0d7de; --fg:#1f2328; --muted:#656d76; --ok:#1a7f37; --bad:#cf222e; --warn:#9a6700; --accent:#0969da; --accent-fg:#ffffff; --sunken:#eff2f5; --term-bg:#0d1117; --term-fg:#e6edf3; }
   * { box-sizing: border-box; }
   body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
   header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
   header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
   header .repo { color:var(--muted); font-size:12px; margin-left:auto; text-align:right; }
+  .themebtn{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:15px;line-height:1}
   main { padding:24px; max-width:1100px; margin:0 auto; display:grid; gap:20px; }
   .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
@@ -25,41 +28,41 @@
   .b-bad { background:rgba(248,81,73,.15); color:var(--bad); }
   .b-warn { background:rgba(210,153,34,.15); color:var(--warn); }
   .b-idle { background:rgba(139,148,158,.15); color:var(--muted); }
-  button { background:var(--accent); color:#0d1117; border:0; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
+  button { background:var(--accent); color:var(--accent-fg); border:0; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   button.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
   .actions { display:flex; gap:10px; }
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
   .foot { color:var(--muted); font-size:12px; text-align:center; padding-bottom:24px; }
   a { color:var(--accent); }
-  select { background:#0d1117; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
+  select { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
   .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .vrow,.frow { display:flex; align-items:center; gap:10px; padding:7px 10px; border-bottom:1px solid var(--line); }
-  .vrow:hover,.frow:hover { background:#0d1117; }
+  .vrow:hover,.frow:hover { background:var(--sunken); }
   .frow .nm,.vrow .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .mini { background:transparent; border:1px solid var(--line); color:var(--muted); border-radius:6px; padding:2px 8px; font-size:12px; font-weight:500; }
   .mini.danger { border-color:rgba(248,81,73,.5); color:var(--bad); }
   .mini.act { border-color:var(--accent); color:var(--accent); }
-  .crumb { flex:1; background:#0d1117; border:1px solid var(--line); border-radius:8px; color:var(--fg); padding:6px 9px; font-family:ui-monospace,monospace; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .crumb { flex:1; background:var(--sunken); border:1px solid var(--line); border-radius:8px; color:var(--fg); padding:6px 9px; font-family:ui-monospace,monospace; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
   .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
   .modal .mhead{padding:14px 16px;border-bottom:1px solid var(--line)}
   .modal .mhead h3{margin:0;font-size:14px}
   .modal .mbody{padding:16px;overflow-y:auto}
   .modal .mbody label{display:flex;gap:8px;align-items:flex-start;padding:8px 0;cursor:pointer}
-  .modal input[type=text]{width:100%;background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;margin-top:6px}
+  .modal input[type=text]{width:100%;background:var(--sunken);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;margin-top:6px}
   .mfoot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between}
   .warn{color:var(--warn)} .danger-text{color:var(--bad)}
   .rclient{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:12px}
   .rclient h3{margin:0 0 8px;font-size:14px;display:flex;align-items:center;gap:10px}
-  .pbar{height:9px;background:#0d1117;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .pbar{height:9px;background:var(--sunken);border:1px solid var(--line);border-radius:999px;overflow:hidden}
   .pfill{height:100%;width:0;background:linear-gradient(90deg,#3fb950,#58a6ff);transition:width .4s ease}
   .pstats{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .pstats b{color:var(--fg)}
   .ctrls{display:flex;gap:8px;margin:10px 0 4px;align-items:center}
   .mini2{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer}
   .mini2.danger{border-color:rgba(248,81,73,.5);color:var(--bad)}
-  .term{background:#010409;border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:220px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#c9d1d9;margin-top:10px}
+  .term{background:var(--term-bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:220px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:var(--term-fg);margin-top:10px}
   .term .a-new{color:#3fb950}.term .a-changed{color:#d29922}.term .a-unchanged{color:#6e7681}.term .a-error{color:#f85149}.term .a-meta{color:#58a6ff}
 </style>
 </head>
@@ -71,6 +74,7 @@
     <div>hot: <span id="hotRepo" class="mono">—</span></div>
     <div>cold: <span id="coldRepo" class="mono">—</span></div>
   </div>
+  <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
 </header>
 
 <main>
@@ -146,6 +150,10 @@
 
 <script>
 const $ = s => document.querySelector(s);
+// theme toggle (initial theme is set by the inline <head> script to avoid flash)
+function themeIcon(){ const b=document.getElementById('themeToggle'); if(b) b.textContent=document.documentElement.getAttribute('data-theme')==='light'?'☀️':'🌙'; }
+function toggleTheme(){ const next=document.documentElement.getAttribute('data-theme')==='light'?'dark':'light'; document.documentElement.setAttribute('data-theme',next); try{localStorage.setItem('hoard-theme',next);}catch(e){} themeIcon(); }
+themeIcon();
 const fmt = t => t ? new Date(t).toLocaleString() : "never";
 const zero = "0001-01-01T00:00:00Z";
 function age(t){
@@ -253,7 +261,7 @@ async function waitIdleThenReload(keepFiles){
 function renderVersions(){
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no versions for this client</div>'; return; }
   $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
-    const sel = s.short_id===bSnap ? 'style="background:#0d1117"' : '';
+    const sel = s.short_id===bSnap ? 'style="background:var(--sunken)"' : '';
     return `<div class="vrow" ${sel}>
       <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
