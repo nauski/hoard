@@ -22,6 +22,10 @@ hoardd "$@" &
 HOARD_PID=$!
 
 # Exit if either process dies so the container/orchestrator can restart cleanly.
-wait -n "$REST_PID" "$HOARD_PID"
+# POSIX sh (dash) has no `wait -n`, so poll both PIDs instead.
+while kill -0 "$REST_PID" 2>/dev/null && kill -0 "$HOARD_PID" 2>/dev/null; do
+  sleep 5
+done
+echo "[entrypoint] a supervised process exited; shutting down"
 term
 exit 1
