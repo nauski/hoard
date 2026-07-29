@@ -69,7 +69,7 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.Handle("GET /", http.FileServerFS(s.webFS))
+	mux.Handle("GET /", noCache(http.FileServerFS(s.webFS)))
 	return logging(s.log, mux)
 }
 
@@ -262,6 +262,15 @@ func redact(repo string) string {
 	// restic S3 URLs don't embed creds (they use env), so this is mostly a
 	// guard for other backends; return as-is for the common case.
 	return repo
+}
+
+// noCache tells browsers to revalidate the embedded dashboard on every load, so
+// a redeployed UI is picked up immediately instead of served stale from cache.
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func logging(log *slog.Logger, next http.Handler) http.Handler {
