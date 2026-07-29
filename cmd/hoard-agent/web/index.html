@@ -431,10 +431,13 @@ async function doDelete(){
 }
 
 load().then(loop);
-// Event-driven: the version list is (re)loaded on first load, when a backup
-// finishes (see refresh()), and after a delete reconciles — never on a blind
-// timer that would fight optimistic edits.
+// Refresh the version list on load, when a backup finishes, after a delete
+// reconciles, AND on a periodic timer so changes made elsewhere (e.g. deletes
+// from the server dashboard) show up automatically. The pendingDel guard means
+// a periodic reload can't resurrect a row the user just optimistically deleted,
+// and loadVersions() no-ops during a backup.
 loadVersions();
+setInterval(loadVersions, 15000);
 </script>
 </body>
 </html>
