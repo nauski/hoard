@@ -11,7 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
+	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -269,6 +272,116 @@ func (c *Client) Stats(ctx context.Context) (*Stats, error) {
 		return nil, fmt.Errorf("parse stats: %w", err)
 	}
 	return &s, nil
+}
+
+// LsEntry is one file or directory inside a snapshot.
+type LsEntry struct {
+	Name  string    `json:"name"`
+	Path  string    `json:"path"`
+	Type  string    `json:"type"` // "dir" or "file"
+	Size  uint64    `json:"size"`
+	MTime time.Time `json:"mtime"`
+}
+
+// Ls lists the immediate children of dir within snapshot snapID (one level, not
+// recursive). dir defaults to "/". Directories sort before files, then by name.
+func (c *Client) Ls(ctx context.Context, snapID, dir string) ([]LsEntry, error) {
+	if dir == "" {
+		dir = "/"
+	}
+	dir = path.Clean(dir)
+	out, err := c.run(ctx, "ls", snapID, dir, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var entries []LsEntry
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
+	for sc.Scan() {
+		var n struct {
+			MessageType string    `json:"message_type"`
+			Name        string    `json:"name"`
+			Type        string    `json:"type"`
+			Path        string    `json:"path"`
+			Size        uint64    `json:"size"`
+			MTime       time.Time `json:"mtime"`
+		}
+		if json.Unmarshal(sc.Bytes(), &n) != nil || n.MessageType != "node" {
+			continue
+		}
+		// Keep only direct children of dir.
+		if path.Dir(n.Path) != dir {
+			continue
+		}
+		entries = append(entries, LsEntry{Name: n.Name, Path: n.Path, Type: n.Type, Size: n.Size, MTime: n.MTime})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if (entries[i].Type == "dir") != (entries[j].Type == "dir") {
+			return entries[i].Type == "dir" // dirs first
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+	return entries, nil
+}
+
+// Dump streams the contents of a single file (filePath) from snapshot snapID to
+// w, for downloads. For a directory restic would emit a tar; we only expose it
+// for files in the UI.
+func (c *Client) Dump(ctx context.Context, snapID, filePath string, w io.Writer) error {
+	cmd := exec.CommandContext(ctx, c.bin, "dump", snapID, filePath)
+	cmd.Env = append(cmd.Environ(), c.env()...)
+	var errb bytes.Buffer
+	cmd.Stdout = w
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("restic dump: %w: %s", err, strings.TrimSpace(errb.String()))
+	}
+	return nil
+}
+
+// Prune removes data no longer referenced by any snapshot, reclaiming space.
+func (c *Client) Prune(ctx context.Context) (string, error) {
+	out, err := c.run(ctx, "prune")
+	return string(out), err
+}
+
+// RewriteExcludePath removes targetPath (a file or directory, with everything
+// under it) from every snapshot of host, rewriting them in place (--forget).
+// It does NOT prune; call Prune afterwards to reclaim space. If host is empty
+// all snapshots are rewritten.
+func (c *Client) RewriteExcludePath(ctx context.Context, host, targetPath string) (string, error) {
+	args := []string{"rewrite", "--forget"}
+	if host != "" {
+		args = append(args, "--host", host)
+	}
+	// Match the path itself and everything beneath it.
+	args = append(args, "--exclude", targetPath, "--exclude", strings.TrimRight(targetPath, "/")+"/**")
+	out, err := c.run(ctx, args...)
+	return string(out), err
+}
+
+// RewriteExcludePathSnap removes targetPath from a single snapshot (by ID),
+// rewriting it in place (--forget). Does not prune.
+func (c *Client) RewriteExcludePathSnap(ctx context.Context, snapID, targetPath string) (string, error) {
+	args := []string{"rewrite", snapID, "--forget",
+		"--exclude", targetPath, "--exclude", strings.TrimRight(targetPath, "/") + "/**"}
+	out, err := c.run(ctx, args...)
+	return string(out), err
+}
+
+// ForgetSnapshot deletes a single snapshot by ID. It does not prune.
+func (c *Client) ForgetSnapshot(ctx context.Context, snapID string) (string, error) {
+	out, err := c.run(ctx, "forget", snapID)
+	return string(out), err
+}
+
+// Unlock removes stale locks (from processes that died, e.g. a killed backup)
+// so a subsequent rewrite/prune can acquire the repository. It uses restic's
+// default behavior, which only clears stale locks — a lock held by a live
+// process (an in-flight backup) is left alone.
+func (c *Client) Unlock(ctx context.Context) error {
+	_, err := c.run(ctx, "unlock")
+	return err
 }
 
 // EnsureInit initializes the repo if it does not yet exist. It is safe to call

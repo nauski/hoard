@@ -40,6 +40,14 @@
   .pstats{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .pstats b{color:var(--fg);font-weight:600}
   .pcur{margin-top:6px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .vrow,.frow{display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid var(--line)}
+  .vrow:hover,.frow:hover{background:#0d1117}
+  .vrow .nm,.frow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mini{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:500;cursor:pointer;text-decoration:none}
+  .mini.danger{border-color:rgba(248,81,73,.5);color:var(--bad)} .mini.act{border-color:var(--accent);color:var(--accent)}
+  .danger-text{color:var(--bad)}
+  .modal .mbody{padding:16px;overflow-y:auto}
+  .modal .mbody label{display:flex;gap:8px;align-items:flex-start;padding:8px 0;cursor:pointer}
   .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
   .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(640px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
   .modal .mhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
@@ -122,15 +130,37 @@
   </div>
 
   <div class="card">
-    <h2>Snapshots on server (this machine)</h2>
-    <table>
-      <thead><tr><th>ID</th><th>When</th><th>Paths</th></tr></thead>
-      <tbody id="snaps"><tr><td colspan="3" class="sub">loading…</td></tr></tbody>
-    </table>
+    <h2>Browse &amp; manage your backups</h2>
+    <div id="bVersions"><div class="sub">loading versions…</div></div>
+    <div id="bFiles" style="margin-top:12px"></div>
   </div>
 
   <div class="foot">hoard agent · pushes to your hoard server · status refreshes every 5s</div>
 </main>
+
+<div id="delBg" class="modal-bg">
+  <div class="modal">
+    <div class="mhead"><h3>🗑 Delete file</h3></div>
+    <div class="mbody">
+      <div class="mono sub" id="delPath">—</div>
+      <div style="margin-top:12px">
+        <label><input type="radio" name="delscope" value="version" checked onchange="onScope()"> <span>From <b>this version only</b> — stays in other snapshots.</span></label>
+        <label><input type="radio" name="delscope" value="all" onchange="onScope()"> <span>From <b class="danger-text">ALL versions</b> — permanently removes it everywhere (hot + e2) and reclaims space. <b class="danger-text">Cannot be undone.</b></span></label>
+      </div>
+      <div id="delConfirmWrap" style="display:none;margin-top:10px">
+        <span class="sub">Type the filename <b class="mono" id="delConfirmName"></b> to confirm:</span>
+        <input id="delConfirm" type="text" oninput="onConfirmType()" placeholder="filename" />
+      </div>
+    </div>
+    <div class="mfoot">
+      <span class="sub" id="delMsg"></span>
+      <div class="bar">
+        <button class="ghost" onclick="closeDel()">Cancel</button>
+        <button id="delGo" class="primary" onclick="doDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="browseBg" class="modal-bg">
   <div class="modal">
@@ -263,7 +293,65 @@ async function refresh(){
 }
 // Adaptive polling: 1s while a backup runs (smooth progress), 5s when idle.
 async function loop(){ await refresh(); setTimeout(loop, running?1000:5000); }
+// ---------------- Backup browser ----------------
+let bSnaps=[], bSnap="", bDir="/", delCtx={};
+async function loadVersions(){
+  try{
+    const sn=await (await fetch("/api/snapshots")).json();
+    bSnaps=(Array.isArray(sn)?sn:[]).sort((a,b)=>new Date(b.time)-new Date(a.time));
+    renderVersions();
+  }catch(e){ $("#bVersions").innerHTML='<div class="sub">can\'t reach server</div>'; }
+}
+function renderVersions(){
+  if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no backups yet</div>'; return; }
+  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
+    const sel=s.short_id===bSnap?'style="background:#0d1117"':'';
+    return `<div class="vrow" ${sel}>
+      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
+      <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
+      <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
+    </div>`;
+  }).join("");
+}
+async function browseVersion(id){ bSnap=id; bDir="/"; renderVersions(); await browseSnap("/"); }
+async function browseSnap(dir){
+  bDir=dir;
+  const r=await fetch("/api/ls?id="+encodeURIComponent(bSnap)+"&path="+encodeURIComponent(dir));
+  const entries=await r.json();
+  if(!r.ok){ $("#bFiles").innerHTML='<div class="sub">'+(entries.error||"error")+'</div>'; return; }
+  const up=dir!=="/"?`<button class="mini" onclick="browseSnap('${parentDir(dir).replace(/'/g,"\\'")}')">↑ up</button>`:"";
+  const rows=(entries||[]).map(e=>{
+    if(e.type==="dir") return `<div class="frow"><span class="nm" style="cursor:pointer" onclick="browseSnap('${e.path.replace(/'/g,"\\'")}')">📁 ${e.name}</span></div>`;
+    return `<div class="frow"><span class="nm">📄 ${e.name} <span class="sub">${hBytes(e.size)}</span></span>
+      <a class="mini act" href="/api/download?id=${encodeURIComponent(bSnap)}&path=${encodeURIComponent(e.path)}">⬇ download</a>
+      <button class="mini danger" onclick='openDel(${JSON.stringify(e.path)},${JSON.stringify(e.name)})'>🗑 delete</button></div>`;
+  }).join("");
+  $("#bFiles").innerHTML=`<div class="bar" style="margin-bottom:8px">${up}<span class="crumb">${bDir}</span><span class="sub mono">${bSnap}</span></div>`+(rows||'<div class="sub">empty folder</div>');
+}
+function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=0?"/":d.slice(0,i); }
+function deleteVersion(id){
+  if(!confirm("Delete the ENTIRE version "+id+" from hot + e2?\nOther versions are unaffected.")) return;
+  fetch("/api/delete-version",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})
+    .then(async r=>{ const j=await r.json(); $("#msg").textContent=r.ok?("deleting version "+id+"…"):("error: "+(j.error||r.status)); setTimeout(loadVersions,2500); });
+}
+function openDel(path,name){ delCtx={path,name}; $("#delPath").textContent=path; $("#delConfirmName").textContent=name;
+  document.querySelector('input[name=delscope][value=version]').checked=true; $("#delConfirm").value=""; onScope(); $("#delMsg").textContent=""; $("#delBg").style.display="flex"; }
+function closeDel(){ $("#delBg").style.display="none"; }
+function scope(){ return document.querySelector('input[name=delscope]:checked').value; }
+function onScope(){ const all=scope()==="all"; $("#delConfirmWrap").style.display=all?"block":"none"; onConfirmType(); }
+function onConfirmType(){ const all=scope()==="all"; $("#delGo").disabled=all&&$("#delConfirm").value!==delCtx.name; }
+async function doDelete(){
+  const all=scope()==="all";
+  const body={ path:delCtx.path }; if(!all) body.version=bSnap;
+  $("#delMsg").textContent="deleting (via server)…"; $("#delGo").disabled=true;
+  const r=await fetch("/api/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(r.ok){ closeDel(); $("#msg").textContent=all?"purging from all versions…":"removing from this version…"; setTimeout(()=>browseVersion(bSnap),2500); }
+  else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); $("#delGo").disabled=false; }
+}
+
 load().then(loop);
+loadVersions();
+setInterval(loadVersions, 15000);
 </script>
 </body>
 </html>

@@ -8,10 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +40,10 @@ type Config struct {
 	Schedule string `json:"schedule"`
 	// Tags applied to each snapshot.
 	Tags []string `json:"tags"`
+	// ServerURL is the hoard server dashboard base URL that destructive deletes
+	// are delegated to (only the server can reach e2). Empty = derive from
+	// Repository (rest://host:8000/... -> http://host:8080).
+	ServerURL string `json:"server_url"`
 }
 
 // Agent owns config persistence, the restic client, and run state.
@@ -102,6 +109,47 @@ func (a *Agent) applyEnv() {
 	if v := os.Getenv("HOARD_AGENT_HOST"); v != "" {
 		a.cfg.Host = v
 	}
+	if v := os.Getenv("HOARD_AGENT_SERVER_URL"); v != "" {
+		a.cfg.ServerURL = v
+	}
+}
+
+// Host returns the snapshot hostname this agent backs up as.
+func (a *Agent) Host() string { return a.GetConfig().Host }
+
+// ServerBaseURL returns the hoard server dashboard URL for delegating deletes.
+// It uses the configured ServerURL, or derives it from the restic REST
+// repository: rest:http://host:8000/hot -> http://host:8080.
+func (a *Agent) ServerBaseURL() string {
+	c := a.GetConfig()
+	if c.ServerURL != "" {
+		return strings.TrimRight(c.ServerURL, "/")
+	}
+	repo := c.Repository
+	repo = strings.TrimPrefix(repo, "rest:")
+	u, err := url.Parse(repo)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Hostname() + ":8080"
+}
+
+// Ls lists one directory level inside a snapshot on the server (hot repo).
+func (a *Agent) Ls(ctx context.Context, snapID, dir string) ([]restic.LsEntry, error) {
+	cl, err := a.resticClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.Ls(ctx, snapID, dir)
+}
+
+// Dump streams a file from a snapshot (hot repo) to w.
+func (a *Agent) Dump(ctx context.Context, snapID, filePath string, w io.Writer) error {
+	cl, err := a.resticClient()
+	if err != nil {
+		return err
+	}
+	return cl.Dump(ctx, snapID, filePath, w)
 }
 
 func defaultExcludes() []string {

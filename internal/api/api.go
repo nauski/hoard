@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
@@ -44,6 +45,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("POST /api/actions/mirror", s.action("mirror"))
 	mux.HandleFunc("POST /api/actions/check", s.action("check"))
+	// Backup browser (reads the fast hot repo; deletes hit hot + cold).
+	mux.HandleFunc("GET /api/ls", s.handleLs)
+	mux.HandleFunc("GET /api/download", s.handleDownload)
+	mux.HandleFunc("POST /api/purge", s.handlePurge)
+	mux.HandleFunc("POST /api/delete-version", s.handleDeleteVersion)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -132,6 +138,86 @@ func (s *Server) Notify(ctx context.Context, title, body string) {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// handleLs lists one directory level inside a snapshot (hot repo).
+func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing snapshot id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	entries, err := s.hot.Ls(ctx, id, r.URL.Query().Get("path"))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// handleDownload streams a single file from a snapshot (hot repo) as a download.
+func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	p := r.URL.Query().Get("path")
+	if id == "" || p == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing id or path"})
+		return
+	}
+	name := p[strings.LastIndex(p, "/")+1:]
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+	ctx := r.Context()
+	if err := s.hot.Dump(ctx, id, p, w); err != nil {
+		// Headers may already be sent; log and give up.
+		s.log.Error("download failed", "err", err, "path", p)
+	}
+}
+
+type purgeRequest struct {
+	Host    string `json:"host"`
+	Path    string `json:"path"`
+	Version string `json:"version"` // optional hot snapshot id; empty = all versions
+}
+
+// handlePurge removes a path from either one version (if version is set) or all
+// versions of a host, across hot + cold.
+func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
+	var req purgeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path"})
+		return
+	}
+	go func() {
+		var err error
+		if req.Version != "" {
+			err = s.sched.PurgePathInVersion(context.Background(), req.Version, req.Path)
+		} else {
+			err = s.sched.PurgePath(context.Background(), req.Host, req.Path)
+		}
+		if err != nil {
+			s.log.Error("purge failed", "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "path": req.Path})
+}
+
+// handleDeleteVersion deletes one whole snapshot (hot + cold twin).
+func (s *Server) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing snapshot id"})
+		return
+	}
+	go func() {
+		if err := s.sched.DeleteSnapshot(context.Background(), req.ID); err != nil {
+			s.log.Error("delete version failed", "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "id": req.ID})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nauski/hoard/internal/restic"
@@ -30,6 +33,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/snapshots", s.snapshots)
 	mux.HandleFunc("GET /api/browse", s.browseDir)
 	mux.HandleFunc("POST /api/backup", s.backup)
+	// Backup browser: ls/download read the hot repo directly; deletes are
+	// delegated to the server (only it can reach e2).
+	mux.HandleFunc("GET /api/ls", s.ls)
+	mux.HandleFunc("GET /api/download", s.download)
+	mux.HandleFunc("POST /api/purge", s.purge)
+	mux.HandleFunc("POST /api/delete-version", s.deleteVersion)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -106,6 +115,91 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+func (s *Server) ls(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing snapshot id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	entries, err := s.agent.Ls(ctx, id, r.URL.Query().Get("path"))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) download(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	p := r.URL.Query().Get("path")
+	if id == "" || p == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing id or path"})
+		return
+	}
+	name := p[strings.LastIndex(p, "/")+1:]
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+	if err := s.agent.Dump(r.Context(), id, p, w); err != nil {
+		s.log.Error("download failed", "err", err, "path", p)
+	}
+}
+
+// purge delegates a delete to the server, which owns both repos. The agent
+// forces host to its own hostname so a client can only purge its own data.
+func (s *Server) purge(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path    string `json:"path"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path"})
+		return
+	}
+	body := map[string]string{"host": s.agent.Host(), "path": req.Path}
+	if req.Version != "" {
+		body["version"] = req.Version
+	}
+	s.delegate(w, r, "/api/purge", body)
+}
+
+func (s *Server) deleteVersion(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing snapshot id"})
+		return
+	}
+	s.delegate(w, r, "/api/delete-version", map[string]string{"id": req.ID})
+}
+
+// delegate forwards a destructive request to the hoard server's API.
+func (s *Server) delegate(w http.ResponseWriter, r *http.Request, path string, body map[string]string) {
+	base := s.agent.ServerBaseURL()
+	if base == "" {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "no server URL configured (set server_url)"})
+		return
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, base+path, bytes.NewReader(raw))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "server unreachable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

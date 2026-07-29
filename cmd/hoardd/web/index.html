@@ -32,6 +32,24 @@
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
   .foot { color:var(--muted); font-size:12px; text-align:center; padding-bottom:24px; }
   a { color:var(--accent); }
+  select { background:#0d1117; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .vrow,.frow { display:flex; align-items:center; gap:10px; padding:7px 10px; border-bottom:1px solid var(--line); }
+  .vrow:hover,.frow:hover { background:#0d1117; }
+  .frow .nm,.vrow .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mini { background:transparent; border:1px solid var(--line); color:var(--muted); border-radius:6px; padding:2px 8px; font-size:12px; font-weight:500; }
+  .mini.danger { border-color:rgba(248,81,73,.5); color:var(--bad); }
+  .mini.act { border-color:var(--accent); color:var(--accent); }
+  .crumb { flex:1; background:#0d1117; border:1px solid var(--line); border-radius:8px; color:var(--fg); padding:6px 9px; font-family:ui-monospace,monospace; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(560px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+  .modal .mhead{padding:14px 16px;border-bottom:1px solid var(--line)}
+  .modal .mhead h3{margin:0;font-size:14px}
+  .modal .mbody{padding:16px;overflow-y:auto}
+  .modal .mbody label{display:flex;gap:8px;align-items:flex-start;padding:8px 0;cursor:pointer}
+  .modal input[type=text]{width:100%;background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;margin-top:6px}
+  .mfoot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between}
+  .warn{color:var(--warn)} .danger-text{color:var(--bad)}
 </style>
 </head>
 <body>
@@ -65,6 +83,17 @@
   </div>
 
   <div class="card">
+    <h2>Backup browser</h2>
+    <div class="bar">
+      <label class="sub">Client:</label>
+      <select id="bClient" onchange="selectClient(this.value)"><option value="">— select a client —</option></select>
+      <span class="sub" id="bHint">pick a client to see its backup versions</span>
+    </div>
+    <div id="bVersions" style="margin-top:14px"></div>
+    <div id="bFiles" style="margin-top:14px"></div>
+  </div>
+
+  <div class="card">
     <h2>Recent jobs</h2>
     <table>
       <thead><tr><th>Job</th><th>When</th><th>Duration</th><th>Result</th><th>Message</th></tr></thead>
@@ -74,6 +103,30 @@
 
   <div class="foot">hoard · auto-refreshes every 5s</div>
 </main>
+
+<div id="delBg" class="modal-bg">
+  <div class="modal">
+    <div class="mhead"><h3>🗑 Delete file</h3></div>
+    <div class="mbody">
+      <div class="mono sub" id="delPath">—</div>
+      <div style="margin-top:12px">
+        <label><input type="radio" name="delscope" value="version" checked onchange="onScope()"> <span>From <b>this version only</b> — the file stays in other snapshots.</span></label>
+        <label><input type="radio" name="delscope" value="all" onchange="onScope()"> <span>From <b class="danger-text">ALL versions</b> — permanently removes it everywhere (hot + e2) and reclaims space. <b class="danger-text">Cannot be undone.</b></span></label>
+      </div>
+      <div id="delConfirmWrap" style="display:none;margin-top:10px">
+        <span class="sub">Type the filename <b class="mono" id="delConfirmName"></b> to confirm:</span>
+        <input id="delConfirm" type="text" oninput="onConfirmType()" placeholder="filename" />
+      </div>
+    </div>
+    <div class="mfoot">
+      <span class="sub" id="delMsg"></span>
+      <div class="bar">
+        <button class="secondary" onclick="closeDel()">Cancel</button>
+        <button id="delGo" onclick="doDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -144,6 +197,89 @@ $("#btnCheck").onclick = ()=>trigger("check");
 
 refresh();
 setInterval(refresh, 5000);
+
+// ---------------- Backup browser ----------------
+function hBytes(b){b=b||0;if(b<1024)return b+" B";const u=["KiB","MiB","GiB","TiB","PiB"];let i=-1;do{b/=1024;i++}while(b>=1024&&i<u.length-1);return b.toFixed(1)+" "+u[i];}
+let bClientHost="", bSnaps=[], bSnap="", bDir="/", delCtx={};
+
+async function loadClients(){
+  try{
+    const st=await (await fetch("/api/status")).json();
+    const hosts=Object.keys(st.clients||{}).sort();
+    const sel=$("#bClient"); const cur=sel.value;
+    sel.innerHTML='<option value="">— select a client —</option>'+hosts.map(h=>`<option value="${h}">${h}</option>`).join("");
+    if(hosts.includes(cur)) sel.value=cur;
+  }catch(e){}
+}
+async function selectClient(host){
+  bClientHost=host; bSnap=""; $("#bFiles").innerHTML="";
+  if(!host){ $("#bVersions").innerHTML=""; $("#bHint").textContent="pick a client to see its backup versions"; return; }
+  $("#bHint").textContent="";
+  const all=await (await fetch("/api/snapshots")).json();
+  bSnaps=(Array.isArray(all)?all:[]).filter(s=>s.hostname===host).sort((a,b)=>new Date(b.time)-new Date(a.time));
+  renderVersions();
+}
+function renderVersions(){
+  if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no versions for this client</div>'; return; }
+  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
+    const sel = s.short_id===bSnap ? 'style="background:#0d1117"' : '';
+    return `<div class="vrow" ${sel}>
+      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
+      <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
+      <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
+    </div>`;
+  }).join("");
+}
+async function browseVersion(id){ bSnap=id; bDir="/"; renderVersions(); await browseDir("/"); }
+async function browseDir(dir){
+  bDir=dir;
+  const r=await fetch("/api/ls?id="+encodeURIComponent(bSnap)+"&path="+encodeURIComponent(dir));
+  const entries=await r.json();
+  if(!r.ok){ $("#bFiles").innerHTML='<div class="sub">'+(entries.error||"error")+'</div>'; return; }
+  const up = dir!=="/" ? `<button class="mini" onclick="browseDir('${parentDir(dir).replace(/'/g,"\\'")}')">↑ up</button>` : "";
+  const rows=(entries||[]).map(e=>{
+    if(e.type==="dir"){
+      return `<div class="frow"><span class="nm" style="cursor:pointer" onclick="browseDir('${e.path.replace(/'/g,"\\'")}')">📁 ${e.name}</span></div>`;
+    }
+    return `<div class="frow"><span class="nm">📄 ${e.name} <span class="sub">${hBytes(e.size)}</span></span>
+      <a class="mini act" href="/api/download?id=${encodeURIComponent(bSnap)}&path=${encodeURIComponent(e.path)}">⬇ download</a>
+      <button class="mini danger" onclick='openDel(${JSON.stringify(e.path)},${JSON.stringify(e.name)})'>🗑 delete</button></div>`;
+  }).join("");
+  $("#bFiles").innerHTML=`<div class="bar" style="margin-bottom:8px">${up}<span class="crumb">${bDir}</span><span class="sub mono">${bSnap}</span></div>`+
+    (rows||'<div class="sub">empty folder</div>');
+}
+function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=0?"/":d.slice(0,i); }
+
+function deleteVersion(id){
+  if(!confirm("Delete the ENTIRE version "+id+" (this snapshot) from hot + e2?\nOther versions are unaffected.")) return;
+  fetch("/api/delete-version",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})
+    .then(()=>{ toast("deleting version "+id+"…"); setTimeout(()=>{selectClient(bClientHost);},1500); });
+}
+
+// ---- file delete modal ----
+function openDel(path,name){ delCtx={path,name}; $("#delPath").textContent=path; $("#delConfirmName").textContent=name;
+  document.querySelector('input[name=delscope][value=version]').checked=true; $("#delConfirm").value=""; onScope(); $("#delMsg").textContent="";
+  $("#delBg").style.display="flex"; }
+function closeDel(){ $("#delBg").style.display="none"; }
+function scope(){ return document.querySelector('input[name=delscope]:checked').value; }
+function onScope(){ const all=scope()==="all"; $("#delConfirmWrap").style.display=all?"block":"none"; onConfirmType(); }
+function onConfirmType(){
+  const all=scope()==="all";
+  $("#delGo").disabled = all && $("#delConfirm").value!==delCtx.name;
+}
+async function doDelete(){
+  const all=scope()==="all";
+  const body={ path:delCtx.path, host:bClientHost };
+  if(!all) body.version=bSnap;
+  $("#delMsg").textContent="deleting…"; $("#delGo").disabled=true;
+  const r=await fetch("/api/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(r.ok){ closeDel(); toast(all?"purging from all versions…":"removing from this version…"); setTimeout(()=>browseVersion(bSnap),2000); }
+  else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); }
+}
+function toast(m){ const el=$("#bHint"); el.textContent=m; setTimeout(()=>{ if(bClientHost) el.textContent=""; },4000); }
+
+loadClients();
+setInterval(loadClients, 8000);
 </script>
 </body>
 </html>
