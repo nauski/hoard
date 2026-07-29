@@ -62,11 +62,30 @@ type Agent struct {
 	progress *restic.Progress // live progress while running, nil when idle
 
 	// live control/observation state for the running backup
-	cancel    context.CancelFunc
-	proc      *os.Process
-	paused    bool
-	startedAt time.Time
-	activity  []string // rolling per-file log tail (terminal view)
+	cancel      context.CancelFunc
+	proc        *os.Process
+	paused      bool
+	startedAt   time.Time
+	pausedAccum time.Duration // total time spent paused so far
+	pauseStart  time.Time     // when the current pause began (zero if not paused)
+	activity    []string      // rolling per-file log tail (terminal view)
+}
+
+// effectiveElapsedLocked returns wall time since the backup started, minus time
+// spent paused. Caller holds the lock. restic doesn't report elapsed/ETA, so we
+// derive them here.
+func (a *Agent) effectiveElapsedLocked() time.Duration {
+	if a.startedAt.IsZero() {
+		return 0
+	}
+	e := time.Since(a.startedAt) - a.pausedAccum
+	if !a.pauseStart.IsZero() {
+		e -= time.Since(a.pauseStart)
+	}
+	if e < 0 {
+		e = 0
+	}
+	return e
 }
 
 // maxActivity is how many recent per-file lines the agent keeps for the UI.
@@ -89,6 +108,17 @@ func (a *Agent) Live() Live {
 	l := Live{Running: a.running, Paused: a.paused, StartedAt: a.startedAt}
 	if a.progress != nil {
 		p := *a.progress
+		// restic doesn't report timing — derive elapsed from the start time
+		// (minus paused time) and ETA from the byte rate.
+		elapsed := a.effectiveElapsedLocked()
+		p.SecondsElapsed = int(elapsed.Seconds())
+		p.SecondsRemaining = 0
+		if !a.paused && p.BytesDone > 0 && elapsed > 0 && p.TotalBytes > p.BytesDone {
+			rate := float64(p.BytesDone) / elapsed.Seconds()
+			if rate > 0 {
+				p.SecondsRemaining = int(float64(p.TotalBytes-p.BytesDone) / rate)
+			}
+		}
 		l.Progress = &p
 	}
 	if len(a.activity) > 0 {
@@ -108,6 +138,7 @@ func (a *Agent) Pause() error {
 		return err
 	}
 	a.paused = true
+	a.pauseStart = time.Now()
 	a.appendActivityLocked("— paused —")
 	return nil
 }
@@ -121,6 +152,10 @@ func (a *Agent) Resume() error {
 	}
 	if err := a.proc.Signal(syscall.SIGCONT); err != nil {
 		return err
+	}
+	if !a.pauseStart.IsZero() {
+		a.pausedAccum += time.Since(a.pauseStart)
+		a.pauseStart = time.Time{}
 	}
 	a.paused = false
 	a.appendActivityLocked("— resumed —")
@@ -374,6 +409,8 @@ func (a *Agent) Backup(ctx context.Context) error {
 	a.paused = false
 	a.cancel = cancel
 	a.startedAt = time.Now()
+	a.pausedAccum = 0
+	a.pauseStart = time.Time{}
 	a.activity = nil
 	a.progress = nil
 	cfg := a.cfg
