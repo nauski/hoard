@@ -137,8 +137,10 @@
     <div class="bar" style="margin-top:14px">
       <button onclick="saveConfig()">Save settings</button>
       <button class="secondary" onclick="testCold()">Test storage connection</button>
+      <button class="secondary" onclick="initCold()">Initialize repository</button>
       <span class="sub" id="cfgMsg"></span>
     </div>
+    <div class="sub" style="margin-top:6px">↳ "Initialize repository" creates a fresh restic repo in an <b>empty</b> bucket (needed once when pointing at new storage). Save your settings first. Harmless if the repo already exists.</div>
     <div class="sub" style="margin-top:10px">Hot repo (local staging, deploy-time): <span class="mono" id="cfgHotRepo">—</span> · <span id="cfgSecrets"></span></div>
   </div>
 
@@ -449,6 +451,14 @@ async function testCold(){
     const j=await (await fetch("/api/config/test-cold",{method:"POST"})).json();
     $("#cfgMsg").textContent=j.ok?"storage reachable ✓":("storage error: "+(j.error||"unreachable"));
   }catch(e){ $("#cfgMsg").textContent="test failed"; }
+}
+async function initCold(){
+  if(!confirm("Initialize a fresh restic repository in the configured bucket?\n\nOnly do this for a NEW, EMPTY bucket. It's a no-op if a repo already exists there. Make sure you've saved the endpoint, keys, and repo password first — and that you've stored the repo password somewhere safe (losing it makes the backups unrecoverable).")) return;
+  $("#cfgMsg").textContent="initializing repository…";
+  try{
+    const j=await (await fetch("/api/config/init-cold",{method:"POST"})).json();
+    $("#cfgMsg").textContent=j.ok?"repository ready ✓ (initialized or already existed)":("init error: "+(j.error||"failed"));
+  }catch(e){ $("#cfgMsg").textContent="init failed"; }
 }
 loadConfig();
 

@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleSetConfig)
 	mux.HandleFunc("POST /api/config/test-cold", s.handleTestCold)
+	mux.HandleFunc("POST /api/config/init-cold", s.handleInitCold)
 	mux.HandleFunc("GET /api/snapshots", s.handleSnapshots)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("POST /api/actions/mirror", s.action("mirror"))

@@ -113,3 +113,18 @@ func (s *Server) handleTestCold(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// handleInitCold initializes the cold repo if it doesn't exist yet — restic
+// creates the encrypted store in the (empty) bucket and seals it with the
+// configured repo password. Safe to run against an already-initialized repo:
+// EnsureInit is a no-op if the repo already opens. This is the GUI equivalent
+// of `restic init`, so switching to fresh storage needs no shell.
+func (s *Server) handleInitCold(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	if err := s.cold().EnsureInit(ctx); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
