@@ -287,13 +287,15 @@ function renderLive(live){
   $("#runTitle").textContent=live.paused?"Running backup — paused":"Running backup";
   $("#btnPause").style.display=live.paused?"none":"";
   $("#btnResume").style.display=live.paused?"":"none";
-  // terminal: only re-render/scroll when the line count changed
+  // terminal: re-render when the feed changes. Compare a content signature, not
+  // just length — a full ring buffer keeps length constant while lines rotate.
   const term=$("#term");
   const lines=live.activity||[];
-  if(term.dataset.n!=String(lines.length)){
+  const sig=lines.length+"|"+(lines[lines.length-1]||"");
+  if(term.dataset.sig!==sig){
     const atBottom = term.scrollHeight-term.scrollTop-term.clientHeight < 40;
     term.innerHTML=lines.map(l=>`<div class="${actionClass(l)}">${esc(l)}</div>`).join("");
-    term.dataset.n=String(lines.length);
+    term.dataset.sig=sig;
     if(atBottom) term.scrollTop=term.scrollHeight;
   }
 }
@@ -306,9 +308,13 @@ async function ctrl(action){
 }
 async function refresh(){
   try{
-    const st=await (await fetch("/api/status")).json();
+    const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),8000);
+    const st=await (await fetch("/api/status",{signal:ctl.signal})).json();
+    clearTimeout(to);
+    const wasRunning=running;
     const live=st.live||{running:st.running};
     running=!!live.running;
+    if(wasRunning && !running) loadVersions(); // backup finished → refresh versions once
     const run=$("#run");
     if(running){ run.textContent=live.paused?"paused":"backing up…"; run.className="badge b-run"; }
     else { run.textContent="idle"; run.className="badge b-idle"; }
@@ -320,19 +326,15 @@ async function refresh(){
       $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='mono'>"+(lr.message||"")+"</span>";
     }
   }catch(e){}
-  try{
-    const sn=await (await fetch("/api/snapshots")).json();
-    const rows=(Array.isArray(sn)?sn:[]).slice(0,10);
-    $("#snaps").innerHTML = rows.length ? rows.map(s=>
-      `<tr><td class="mono">${s.short_id||s.id.slice(0,8)}</td><td>${fmt(s.time)}</td><td class="sub mono">${(s.paths||[]).join(", ")}</td></tr>`
-    ).join("") : '<tr><td colspan="3" class="sub">no snapshots yet</td></tr>';
-  }catch(e){ $("#snaps").innerHTML='<tr><td colspan="3" class="sub">can\'t reach server</td></tr>'; }
 }
 // Adaptive polling: 1s while a backup runs (smooth progress), 5s when idle.
+// Only hits /api/status (cheap, in-memory) — the version list is refreshed
+// separately by loadVersions so a slow restic call can never freeze this loop.
 async function loop(){ await refresh(); setTimeout(loop, running?1000:5000); }
 // ---------------- Backup browser ----------------
 let bSnaps=[], bSnap="", bDir="/", delCtx={}, bEntries=[];
 async function loadVersions(){
+  if(running) return; // don't spawn restic against the busy rest-server mid-backup
   let sn;
   try{ const r=await fetch("/api/snapshots"); sn=await r.json(); if(!r.ok) throw 0; }
   catch(e){ if(!bSnaps.length) $("#bVersions").innerHTML='<div class="sub">can\'t reach server</div>'; return; }

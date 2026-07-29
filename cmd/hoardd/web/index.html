@@ -335,10 +335,11 @@ async function rctrl(host,action){
 }
 function paintTerm(host,lines){
   const term=document.getElementById("term-"+host); if(!term) return;
-  if(term.dataset.n===String(lines.length)) return;
+  const sig=lines.length+"|"+(lines[lines.length-1]||"");
+  if(term.dataset.sig===sig) return; // content signature: length alone freezes when the ring buffer is full
   const atBottom=term.scrollHeight-term.scrollTop-term.clientHeight<40;
   term.innerHTML=lines.map(l=>`<div class="${actionClass(l)}">${esc(l)}</div>`).join("");
-  term.dataset.n=String(lines.length);
+  term.dataset.sig=sig;
   if(atBottom) term.scrollTop=term.scrollHeight;
 }
 async function loadRunning(){
