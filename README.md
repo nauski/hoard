@@ -13,7 +13,13 @@ verifies integrity, enforces retention, lets you **browse and clean up** what's
 stored, and **alerts you the moment a client goes stale or a job fails** — so a
 backup can never quietly rot for months.
 
-![Server dashboard](docs/images/hoard-server-dashboard.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-server-dashboard-dark.png">
+  <img alt="Server dashboard" src="docs/images/hoard-server-dashboard-light.png">
+</picture>
+
+> The screenshots below follow your GitHub theme — dark screenshots in dark
+> mode, light in light mode. Both dashboards have the same 🌙/☀️ toggle built in.
 
 > **Why not just use the IDrive client?** Classic IDrive personal backup has no
 > public API — the only interface is their proprietary Perl/Python `.bin`, the
@@ -84,14 +90,20 @@ Open the server dashboard, pick a **client**, then a **version**, and walk its
 file tree. Download any file, or delete one — from just that version, or from
 **every** version to reclaim the space for good.
 
-![Backup browser](docs/images/hoard-server-browser.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-server-browser-dark.png">
+  <img alt="Backup browser" src="docs/images/hoard-server-browser-light.png">
+</picture>
 
 Because your data lives in two repos, deleting "from all versions" runs
 `restic rewrite --exclude` + `prune` on **both** the hot repo and e2 — otherwise
 the next mirror would copy the file straight back, or e2 would keep holding it.
 The irreversible option makes you type the filename to confirm:
 
-![Delete from all versions](docs/images/hoard-delete-modal.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-delete-modal-dark.png">
+  <img alt="Delete from all versions" src="docs/images/hoard-delete-modal-light.png">
+</picture>
 
 ## The agent
 
@@ -100,7 +112,10 @@ Pick folders with the browser, set a daily time, hit **Back up now**, and watch
 live progress. The same backup browser is here too, scoped to this machine — and
 its deletes are delegated to the server so they hit e2 as well.
 
-![Agent dashboard](docs/images/hoard-agent-dashboard.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-agent-dashboard-dark.png">
+  <img alt="Agent dashboard" src="docs/images/hoard-agent-dashboard-light.png">
+</picture>
 
 ## Watching & controlling live backups
 
@@ -108,14 +123,20 @@ While a backup runs, the agent shows a live panel: progress with a real elapsed
 time and ETA, **pause / resume / cancel** controls, and a terminal-style feed of
 every file being processed (colour-coded new / changed / unchanged).
 
-![Agent running a backup](docs/images/hoard-running-agent.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-running-agent-dark.png">
+  <img alt="Agent running a backup" src="docs/images/hoard-running-agent-light.png">
+</picture>
 
 The server rolls this up for the **whole fleet** — one panel per client currently
 backing up, each with the same live feed and controls. Pause or cancel a remote
 client's backup right from here. Since agents bind localhost-only, control travels
 back on the status reports each agent already sends the server every second.
 
-![Server watching all clients](docs/images/hoard-running-server.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-running-server-dark.png">
+  <img alt="Server watching all clients" src="docs/images/hoard-running-server-light.png">
+</picture>
 
 ## Quick start — server (Docker / TrueNAS)
 
