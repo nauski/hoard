@@ -26,7 +26,7 @@ type Notifier interface {
 // Scheduler owns the background job loop and can also run jobs on demand
 // (triggered from the API).
 type Scheduler struct {
-	cfg   *config.Config
+	cfg   *config.Store
 	hot   *restic.Client
 	cold  *restic.Client
 	store *state.Store
@@ -37,7 +37,7 @@ type Scheduler struct {
 	running string     // name of the currently running job, "" if idle
 }
 
-func New(cfg *config.Config, hot, cold *restic.Client, store *state.Store, log *slog.Logger) *Scheduler {
+func New(cfg *config.Store, hot, cold *restic.Client, store *state.Store, log *slog.Logger) *Scheduler {
 	return &Scheduler{cfg: cfg, hot: hot, cold: cold, store: store, log: log}
 }
 
@@ -75,11 +75,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 			// Always refresh freshness each tick (cheap: one snapshots call).
 			s.RefreshClients(ctx)
 
-			if s.cfg.Schedule.Mirror == hhmm {
+			if s.cfg.Load().Schedule.Mirror == hhmm {
 				lastFired = stamp
 				go s.Mirror(ctx)
 			}
-			if s.cfg.Schedule.Check == hhmm && s.weekdayOK(now) {
+			if s.cfg.Load().Schedule.Check == hhmm && s.weekdayOK(now) {
 				lastFired = stamp
 				go s.Check(ctx)
 			}
@@ -88,10 +88,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 func (s *Scheduler) weekdayOK(now time.Time) bool {
-	if s.cfg.Schedule.CheckWeekday == nil {
+	if s.cfg.Load().Schedule.CheckWeekday == nil {
 		return true
 	}
-	return int(now.Weekday()) == *s.cfg.Schedule.CheckWeekday
+	return int(now.Weekday()) == *s.cfg.Load().Schedule.CheckWeekday
 }
 
 // Mirror copies new snapshots hot -> cold, then applies retention/prune on cold.
@@ -102,7 +102,7 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	defer s.release()
 
 	start := time.Now()
-	out, err := s.cold.CopyFrom(ctx, s.cfg.Hot)
+	out, err := s.cold.CopyFrom(ctx, s.cfg.Load().Hot)
 	res := state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
@@ -126,7 +126,7 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 
 func (s *Scheduler) prune(ctx context.Context) {
 	start := time.Now()
-	out, err := s.cold.ForgetPrune(ctx, s.cfg.Retention)
+	out, err := s.cold.ForgetPrune(ctx, s.cfg.Load().Retention)
 	res := state.JobResult{Job: "prune", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
@@ -220,13 +220,13 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 		}
 	}
 
-	stale := s.cfg.Schedule.StaleAfter.Std()
+	stale := s.cfg.Load().Schedule.StaleAfter.Std()
 	prev := s.store.Snapshot()
 	for host, c := range latest {
 		if stale > 0 && time.Since(c.LastSnapshot) > stale {
 			c.Stale = true
 			// Only alert on the transition into staleness to avoid spamming.
-			if s.cfg.Alert.OnStale && !prev.Clients[host].Stale {
+			if s.cfg.Load().Alert.OnStale && !prev.Clients[host].Stale {
 				s.alert("client backup is stale",
 					host+" has not backed up since "+c.LastSnapshot.Format(time.RFC3339))
 			}

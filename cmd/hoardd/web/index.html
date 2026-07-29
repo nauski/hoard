@@ -36,6 +36,9 @@
   .foot { color:var(--muted); font-size:12px; text-align:center; padding-bottom:24px; }
   a { color:var(--accent); }
   select { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
+  input[type=text] { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:13px; width:100%; }
+  .setgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .setgrid label { display:block; margin-bottom:4px; }
   .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .vrow,.frow { display:flex; align-items:center; gap:10px; padding:7px 10px; border-bottom:1px solid var(--line); }
   .vrow:hover,.frow:hover { background:var(--sunken); }
@@ -100,6 +103,36 @@
       <button id="btnCheck" class="secondary">Verify integrity</button>
     </div>
     <p class="sub" id="actionMsg"></p>
+  </div>
+
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="sub" style="margin-bottom:8px">Schedule</div>
+    <div class="setgrid">
+      <div><label class="sub">Mirror to e2 at (HH:MM)</label><input id="cfgMirror" type="text" placeholder="02:30"></div>
+      <div><label class="sub">Integrity check at (HH:MM)</label><input id="cfgCheck" type="text" placeholder="04:00"></div>
+      <div><label class="sub">Check weekday (0=Sun…6=Sat, blank=daily)</label><input id="cfgWeekday" type="text" placeholder="0"></div>
+      <div><label class="sub">Stale after (e.g. 26h)</label><input id="cfgStale" type="text" placeholder="26h"></div>
+    </div>
+    <div class="sub" style="margin:12px 0 8px">Retention — keep</div>
+    <div class="setgrid">
+      <div><label class="sub">last</label><input id="cfgKLast" type="text"></div>
+      <div><label class="sub">daily</label><input id="cfgKDaily" type="text"></div>
+      <div><label class="sub">weekly</label><input id="cfgKWeekly" type="text"></div>
+      <div><label class="sub">monthly</label><input id="cfgKMonthly" type="text"></div>
+      <div><label class="sub">yearly</label><input id="cfgKYearly" type="text"></div>
+    </div>
+    <div class="sub" style="margin:12px 0 8px">Alerts</div>
+    <div class="setgrid">
+      <div style="grid-column:1/-2"><label class="sub">Webhook URL (ntfy / Discord-compatible)</label><input id="cfgWebhook" type="text" placeholder="https://ntfy.sh/your-topic"></div>
+      <div><label class="sub">&nbsp;</label><label><input type="checkbox" id="cfgOnStale"> alert when a client goes stale</label></div>
+    </div>
+    <div class="bar" style="margin-top:14px">
+      <button onclick="saveConfig()">Save settings</button>
+      <span class="sub" id="cfgMsg"></span>
+    </div>
+    <div class="sub" style="margin-top:12px">Repos &amp; secrets (managed at deploy time — TrueNAS app):
+      hot <span class="mono" id="cfgHotRepo">—</span> · cold <span class="mono" id="cfgColdRepo">—</span> · <span id="cfgSecrets"></span></div>
   </div>
 
   <div class="card">
@@ -360,6 +393,44 @@ async function loadStats(){
 }
 loadStats();
 setInterval(loadStats, 60000);
+
+// ---------------- Settings ----------------
+async function loadConfig(){
+  try{
+    const c=await (await fetch("/api/config")).json();
+    $("#cfgMirror").value=c.schedule.mirror||"";
+    $("#cfgCheck").value=c.schedule.check||"";
+    $("#cfgWeekday").value=(c.schedule.check_weekday==null)?"":c.schedule.check_weekday;
+    $("#cfgStale").value=c.schedule.stale_after||"";
+    $("#cfgKLast").value=c.retention.keep_last||0;
+    $("#cfgKDaily").value=c.retention.keep_daily||0;
+    $("#cfgKWeekly").value=c.retention.keep_weekly||0;
+    $("#cfgKMonthly").value=c.retention.keep_monthly||0;
+    $("#cfgKYearly").value=c.retention.keep_yearly||0;
+    $("#cfgWebhook").value=c.alert.webhook_url||"";
+    $("#cfgOnStale").checked=!!c.alert.on_stale;
+    $("#cfgHotRepo").textContent=c.hot_repo||"—";
+    $("#cfgColdRepo").textContent=c.cold_repo||"—";
+    $("#cfgSecrets").innerHTML="secrets: hot "+(c.hot_password_set?"✓":"✗")+" · cold "+(c.cold_password_set?"✓":"✗")+" · e2 keys "+(c.s3_keys_set?"✓":"✗");
+  }catch(e){}
+}
+async function saveConfig(){
+  const wd=$("#cfgWeekday").value.trim();
+  const num=id=>{const n=parseInt($("#"+id).value,10);return isNaN(n)?0:n;};
+  const body={
+    schedule:{mirror:$("#cfgMirror").value.trim(),check:$("#cfgCheck").value.trim(),
+      check_weekday: wd===""?null:parseInt(wd,10), stale_after:$("#cfgStale").value.trim()},
+    retention:{keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")},
+    alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked}
+  };
+  $("#cfgMsg").textContent="saving…";
+  const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const j=await r.json();
+  if(r.ok){ $("#cfgMsg").textContent="saved ✓ (applies immediately)"; loadConfig(); }
+  else { $("#cfgMsg").textContent="error: "+(j.error||r.status); }
+  setTimeout(()=>{if($("#cfgMsg").textContent.startsWith("saved"))$("#cfgMsg").textContent="";},4000);
+}
+loadConfig();
 
 // ---------------- Running backups (all clients) ----------------
 function hDur(s){s=Math.max(0,Math.round(s||0));if(s<60)return s+"s";const m=Math.floor(s/60),ss=s%60;if(m<60)return m+"m "+ss+"s";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}

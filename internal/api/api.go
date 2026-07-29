@@ -20,7 +20,7 @@ import (
 
 // Server wires HTTP handlers to the scheduler, store, and restic clients.
 type Server struct {
-	cfg    *config.Config
+	cfg    *config.Store
 	sched  *scheduler.Scheduler
 	store  *state.Store
 	hot    *restic.Client
@@ -31,7 +31,7 @@ type Server struct {
 	live   *liveStore
 }
 
-func New(cfg *config.Config, sched *scheduler.Scheduler, store *state.Store, hot, cold *restic.Client, log *slog.Logger, webFS fs.FS) *Server {
+func New(cfg *config.Store, sched *scheduler.Scheduler, store *state.Store, hot, cold *restic.Client, log *slog.Logger, webFS fs.FS) *Server {
 	return &Server{
 		cfg: cfg, sched: sched, store: store, hot: hot, cold: cold, log: log, webFS: webFS,
 		client: &http.Client{Timeout: 10 * time.Second},
@@ -43,6 +43,8 @@ func New(cfg *config.Config, sched *scheduler.Scheduler, store *state.Store, hot
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/config", s.handleGetConfig)
+	mux.HandleFunc("POST /api/config", s.handleSetConfig)
 	mux.HandleFunc("GET /api/snapshots", s.handleSnapshots)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("POST /api/actions/mirror", s.action("mirror"))
@@ -81,8 +83,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Running:  s.sched.Running(),
 		Clients:  snap.Clients,
 		Jobs:     snap.LastByJob,
-		ColdRepo: redact(s.cfg.Cold.Repository),
-		HotRepo:  s.cfg.Hot.Repository,
+		ColdRepo: redact(s.cfg.Load().Cold.Repository),
+		HotRepo:  s.cfg.Load().Hot.Repository,
 	})
 }
 
@@ -124,7 +126,7 @@ func (s *Server) action(job string) http.HandlerFunc {
 
 // Notify implements scheduler.Notifier via a generic JSON webhook.
 func (s *Server) Notify(ctx context.Context, title, body string) {
-	if s.cfg.Alert.WebhookURL == "" {
+	if s.cfg.Load().Alert.WebhookURL == "" {
 		return
 	}
 	// Payload shape works for ntfy/Discord-compatible relays that read "content".
@@ -134,7 +136,7 @@ func (s *Server) Notify(ctx context.Context, title, body string) {
 		"text":    "**hoard: " + title + "**\n" + body,
 	}
 	raw, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Alert.WebhookURL, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Load().Alert.WebhookURL, bytes.NewReader(raw))
 	if err != nil {
 		return
 	}

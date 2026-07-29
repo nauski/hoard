@@ -81,8 +81,11 @@ func main() {
 
 	// The API server doubles as the alert Notifier for the scheduler; wire it
 	// in after construction so both share one scheduler (and one job lock).
-	sched := scheduler.New(cfg, hot, cold, store, log)
-	srv := api.New(cfg, sched, store, hot, cold, log, sub)
+	// Live, persistable config: GUI edits swap it in and write it back to the
+	// config file (secrets excluded — they come from env).
+	cfgStore := config.NewStore(cfg, *cfgPath)
+	sched := scheduler.New(cfgStore, hot, cold, store, log)
+	srv := api.New(cfgStore, sched, store, hot, cold, log, sub)
 	sched.SetNotifier(srv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
