@@ -211,13 +211,24 @@ async function loadClients(){
     if(hosts.includes(cur)) sel.value=cur;
   }catch(e){}
 }
-async function selectClient(host){
-  bClientHost=host; bSnap=""; $("#bFiles").innerHTML="";
+async function selectClient(host, keepFiles){
+  bClientHost=host; if(!keepFiles){ bSnap=""; $("#bFiles").innerHTML=""; }
   if(!host){ $("#bVersions").innerHTML=""; $("#bHint").textContent="pick a client to see its backup versions"; return; }
   $("#bHint").textContent="";
-  const all=await (await fetch("/api/snapshots")).json();
-  bSnaps=(Array.isArray(all)?all:[]).filter(s=>s.hostname===host).sort((a,b)=>new Date(b.time)-new Date(a.time));
+  let all;
+  try { const r=await fetch("/api/snapshots"); all=await r.json(); if(!r.ok) throw 0; }
+  catch(e){ return; } // transient (e.g. repo busy): keep the current list, don't blank
+  if(!Array.isArray(all)) return;
+  bSnaps=all.filter(s=>s.hostname===host).sort((a,b)=>new Date(b.time)-new Date(a.time));
   renderVersions();
+}
+// Poll until the server is idle (delete/purge job finished), then reload the list.
+async function waitIdleThenReload(){
+  for(let i=0;i<60;i++){
+    try{ const st=await (await fetch("/api/status")).json(); if(!st.running){ break; } }catch(e){}
+    await new Promise(r=>setTimeout(r,1000));
+  }
+  await selectClient(bClientHost);
 }
 function renderVersions(){
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no versions for this client</div>'; return; }
@@ -253,7 +264,7 @@ function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=
 function deleteVersion(id){
   if(!confirm("Delete the ENTIRE version "+id+" (this snapshot) from hot + e2?\nOther versions are unaffected.")) return;
   fetch("/api/delete-version",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})
-    .then(()=>{ toast("deleting version "+id+"…"); setTimeout(()=>{selectClient(bClientHost);},1500); });
+    .then(()=>{ toast("deleting version "+id+"… (reclaiming space, may take a moment)"); waitIdleThenReload(); });
 }
 
 // ---- file delete modal ----
@@ -273,8 +284,10 @@ async function doDelete(){
   if(!all) body.version=bSnap;
   $("#delMsg").textContent="deleting…"; $("#delGo").disabled=true;
   const r=await fetch("/api/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(r.ok){ closeDel(); toast(all?"purging from all versions…":"removing from this version…"); setTimeout(()=>browseVersion(bSnap),2000); }
-  else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); }
+  if(r.ok){ closeDel(); toast(all?"purging from all versions… (may take a moment)":"removing from this version…");
+    // rewrite changes snapshot IDs, so reload the version list rather than the old id.
+    bSnap=""; $("#bFiles").innerHTML=""; waitIdleThenReload(); }
+  else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); $("#delGo").disabled=false; }
 }
 function toast(m){ const el=$("#bHint"); el.textContent=m; setTimeout(()=>{ if(bClientHost) el.textContent=""; },4000); }
 

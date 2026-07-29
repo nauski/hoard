@@ -296,12 +296,16 @@ async function loop(){ await refresh(); setTimeout(loop, running?1000:5000); }
 // ---------------- Backup browser ----------------
 let bSnaps=[], bSnap="", bDir="/", delCtx={};
 async function loadVersions(){
-  try{
-    const sn=await (await fetch("/api/snapshots")).json();
-    bSnaps=(Array.isArray(sn)?sn:[]).sort((a,b)=>new Date(b.time)-new Date(a.time));
-    renderVersions();
-  }catch(e){ $("#bVersions").innerHTML='<div class="sub">can\'t reach server</div>'; }
+  let sn;
+  try{ const r=await fetch("/api/snapshots"); sn=await r.json(); if(!r.ok) throw 0; }
+  catch(e){ if(!bSnaps.length) $("#bVersions").innerHTML='<div class="sub">can\'t reach server</div>'; return; }
+  if(!Array.isArray(sn)) return; // transient (repo busy): keep current list
+  bSnaps=sn.sort((a,b)=>new Date(b.time)-new Date(a.time));
+  renderVersions();
 }
+// Deletes run on the server (delegated); the agent can't see that job's state,
+// so reload the list a few times over ~12s to settle on the final result.
+function reloadSoon(){ [500,2000,5000,9000,12000].forEach(ms=>setTimeout(loadVersions,ms)); }
 function renderVersions(){
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no backups yet</div>'; return; }
   $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
@@ -332,7 +336,7 @@ function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=
 function deleteVersion(id){
   if(!confirm("Delete the ENTIRE version "+id+" from hot + e2?\nOther versions are unaffected.")) return;
   fetch("/api/delete-version",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})
-    .then(async r=>{ const j=await r.json(); $("#msg").textContent=r.ok?("deleting version "+id+"…"):("error: "+(j.error||r.status)); setTimeout(loadVersions,2500); });
+    .then(async r=>{ const j=await r.json(); $("#msg").textContent=r.ok?("deleting version "+id+"… (reclaiming space)"):("error: "+(j.error||r.status)); reloadSoon(); });
 }
 function openDel(path,name){ delCtx={path,name}; $("#delPath").textContent=path; $("#delConfirmName").textContent=name;
   document.querySelector('input[name=delscope][value=version]').checked=true; $("#delConfirm").value=""; onScope(); $("#delMsg").textContent=""; $("#delBg").style.display="flex"; }
@@ -345,7 +349,9 @@ async function doDelete(){
   const body={ path:delCtx.path }; if(!all) body.version=bSnap;
   $("#delMsg").textContent="deleting (via server)…"; $("#delGo").disabled=true;
   const r=await fetch("/api/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(r.ok){ closeDel(); $("#msg").textContent=all?"purging from all versions…":"removing from this version…"; setTimeout(()=>browseVersion(bSnap),2500); }
+  if(r.ok){ closeDel(); $("#msg").textContent=all?"purging from all versions… (may take a moment)":"removing from this version…";
+    // rewrite changes snapshot IDs, so reload the version list rather than the old id.
+    bSnap=""; $("#bFiles").innerHTML=""; reloadSoon(); }
   else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); $("#delGo").disabled=false; }
 }
 

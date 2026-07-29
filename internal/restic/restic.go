@@ -77,9 +77,11 @@ type Snapshot struct {
 	Tags     []string  `json:"tags"`
 }
 
-// Snapshots lists snapshots in the repo, newest first.
+// Snapshots lists snapshots in the repo, newest first. Uses --no-lock so it
+// keeps working while a prune/rewrite holds the exclusive lock (a delete in
+// progress must not make the browser read fail and blank the list).
 func (c *Client) Snapshots(ctx context.Context) ([]Snapshot, error) {
-	out, err := c.run(ctx, "snapshots", "--json")
+	out, err := c.run(ctx, "snapshots", "--json", "--no-lock")
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +292,7 @@ func (c *Client) Ls(ctx context.Context, snapID, dir string) ([]LsEntry, error) 
 		dir = "/"
 	}
 	dir = path.Clean(dir)
-	out, err := c.run(ctx, "ls", snapID, dir, "--json")
+	out, err := c.run(ctx, "ls", snapID, dir, "--json", "--no-lock")
 	if err != nil {
 		return nil, err
 	}
