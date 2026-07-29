@@ -294,7 +294,7 @@ async function refresh(){
 // Adaptive polling: 1s while a backup runs (smooth progress), 5s when idle.
 async function loop(){ await refresh(); setTimeout(loop, running?1000:5000); }
 // ---------------- Backup browser ----------------
-let bSnaps=[], bSnap="", bDir="/", delCtx={};
+let bSnaps=[], bSnap="", bDir="/", delCtx={}, bEntries=[];
 async function loadVersions(){
   let sn;
   try{ const r=await fetch("/api/snapshots"); sn=await r.json(); if(!r.ok) throw 0; }
@@ -323,8 +323,12 @@ async function browseSnap(dir){
   const r=await fetch("/api/ls?id="+encodeURIComponent(bSnap)+"&path="+encodeURIComponent(dir));
   const entries=await r.json();
   if(!r.ok){ $("#bFiles").innerHTML='<div class="sub">'+(entries.error||"error")+'</div>'; return; }
-  const up=dir!=="/"?`<button class="mini" onclick="browseSnap('${parentDir(dir).replace(/'/g,"\\'")}')">↑ up</button>`:"";
-  const rows=(entries||[]).map(e=>{
+  bEntries = Array.isArray(entries) ? entries : [];
+  renderFiles();
+}
+function renderFiles(){
+  const up=bDir!=="/"?`<button class="mini" onclick="browseSnap('${parentDir(bDir).replace(/'/g,"\\'")}')">↑ up</button>`:"";
+  const rows=bEntries.map(e=>{
     if(e.type==="dir") return `<div class="frow"><span class="nm" style="cursor:pointer" onclick="browseSnap('${e.path.replace(/'/g,"\\'")}')">📁 ${e.name}</span></div>`;
     return `<div class="frow"><span class="nm">📄 ${e.name} <span class="sub">${hBytes(e.size)}</span></span>
       <a class="mini act" href="/api/download?id=${encodeURIComponent(bSnap)}&path=${encodeURIComponent(e.path)}">⬇ download</a>
@@ -335,6 +339,9 @@ async function browseSnap(dir){
 function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=0?"/":d.slice(0,i); }
 function deleteVersion(id){
   if(!confirm("Delete the ENTIRE version "+id+" from hot + e2?\nOther versions are unaffected.")) return;
+  // Optimistic: drop the row now, reconcile in the background.
+  bSnaps=bSnaps.filter(s=>s.short_id!==id); renderVersions();
+  if(bSnap===id){ bSnap=""; bEntries=[]; $("#bFiles").innerHTML=""; }
   fetch("/api/delete-version",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})
     .then(async r=>{ const j=await r.json(); $("#msg").textContent=r.ok?("deleting version "+id+"… (reclaiming space)"):("error: "+(j.error||r.status)); reloadSoon(); });
 }
@@ -348,11 +355,12 @@ async function doDelete(){
   const all=scope()==="all";
   const body={ path:delCtx.path }; if(!all) body.version=bSnap;
   $("#delMsg").textContent="deleting (via server)…"; $("#delGo").disabled=true;
+  const path=delCtx.path;
+  // Optimistic: remove the file row now, keep the folder open.
+  bEntries=bEntries.filter(e=>e.path!==path); renderFiles();
   const r=await fetch("/api/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(r.ok){ closeDel(); $("#msg").textContent=all?"purging from all versions… (may take a moment)":"removing from this version…";
-    // rewrite changes snapshot IDs, so reload the version list rather than the old id.
-    bSnap=""; $("#bFiles").innerHTML=""; reloadSoon(); }
-  else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); $("#delGo").disabled=false; }
+  if(r.ok){ closeDel(); $("#msg").textContent=all?"purging from all versions… (reclaiming space)":"removing from this version…"; reloadSoon(); }
+  else { const j=await r.json(); $("#delMsg").textContent="error: "+(j.error||r.status); $("#delGo").disabled=false; browseSnap(bDir); }
 }
 
 load().then(loop);
