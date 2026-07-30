@@ -446,6 +446,10 @@ func (c *Client) ForgetDryRun(ctx context.Context, r config.Retention) ([]Snapsh
 	if err != nil {
 		return nil, err
 	}
+	// A repo with no snapshots produces empty output — nothing to forget.
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil, nil
+	}
 	var groups []struct {
 		Remove []Snapshot `json:"remove"`
 	}

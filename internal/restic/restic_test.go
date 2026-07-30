@@ -331,3 +331,24 @@ func TestDiff(t *testing.T) {
 		t.Fatalf("added.txt not in changes: %+v", d.Changes)
 	}
 }
+
+func TestForgetDryRunEmptyRepo(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not on PATH")
+	}
+	repoDir := t.TempDir()
+	c := New("restic", config.Repo{Repository: repoDir, Password: "test"})
+	ctx := context.Background()
+	if err := c.EnsureInit(ctx); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	// forget --dry-run --json on a repo with no snapshots emits empty output;
+	// that must be treated as "nothing to forget", not a parse error.
+	rm, err := c.ForgetDryRun(ctx, config.Retention{Last: 1})
+	if err != nil {
+		t.Fatalf("empty-repo dry-run errored: %v", err)
+	}
+	if len(rm) != 0 {
+		t.Fatalf("expected 0 snapshots, got %d", len(rm))
+	}
+}
