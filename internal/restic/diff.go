@@ -31,7 +31,7 @@ const diffChangeCap = 200
 // Diff runs `restic diff idA idB --json` and returns the statistics + a capped
 // list of changed paths. Read-only.
 func (c *Client) Diff(ctx context.Context, idA, idB string) (*DiffStat, error) {
-	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), "diff", idA, idB, "--json")...)
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), "diff", idA, idB, "--json", "--no-lock")...)
 	cmd.Env = append(cmd.Environ(), c.env()...)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
