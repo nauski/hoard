@@ -142,19 +142,30 @@ func (s *Server) action(job string) http.HandlerFunc {
 	}
 }
 
-// Notify implements scheduler.Notifier via a generic JSON webhook.
+// Notify implements scheduler.Notifier, fanning out to every configured channel
+// (generic webhook and/or email). Each is best-effort; one failing never blocks
+// the other.
 func (s *Server) Notify(ctx context.Context, title, body string) {
-	if s.cfg.Load().Alert.WebhookURL == "" {
-		return
+	cfg := s.cfg.Load()
+	if cfg.Alert.WebhookURL != "" {
+		s.postWebhook(ctx, cfg.Alert.WebhookURL, title, body)
 	}
-	// Payload shape works for ntfy/Discord-compatible relays that read "content".
+	if sm := cfg.SMTP; sm.Host != "" && sm.From != "" && sm.To != "" {
+		if err := sendEmail(sm, "hoard: "+title, body); err != nil {
+			s.log.Warn("email alert failed", "err", err)
+		}
+	}
+}
+
+// postWebhook sends the alert as a generic JSON POST (ntfy/Discord-compatible).
+func (s *Server) postWebhook(ctx context.Context, url, title, body string) {
 	payload := map[string]string{
 		"title":   "hoard: " + title,
 		"content": body,
 		"text":    "**hoard: " + title + "**\n" + body,
 	}
 	raw, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Load().Alert.WebhookURL, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return
 	}

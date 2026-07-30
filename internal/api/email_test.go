@@ -3,13 +3,19 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
+	"github.com/nauski/hoard/internal/scheduler"
+	"github.com/nauski/hoard/internal/state"
 )
 
 func TestBuildEmail(t *testing.T) {
@@ -116,5 +122,36 @@ func TestSendEmail(t *testing.T) {
 func TestSendEmailNotConfigured(t *testing.T) {
 	if err := sendEmail(config.SMTP{}, "s", "b"); err == nil {
 		t.Fatal("expected error for unconfigured SMTP")
+	}
+}
+
+func TestNotifyFansOutToBoth(t *testing.T) {
+	var webhookHit int32
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&webhookHit, 1)
+	}))
+	defer hook.Close()
+	host, port, captured, closeFn := startMockSMTP(t)
+	defer closeFn()
+
+	cfg := config.NewStore(&config.Config{
+		Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"},
+		Alert: config.Alert{WebhookURL: hook.URL},
+		SMTP:  config.SMTP{Host: host, Port: port, From: "a@x.com", To: "b@y.com"},
+	}, "")
+	st, _ := state.Load("")
+	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
+
+	srv.Notify(context.Background(), "title here", "body here")
+
+	if atomic.LoadInt32(&webhookHit) != 1 {
+		t.Fatalf("webhook not hit: %d", atomic.LoadInt32(&webhookHit))
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(captured.String(), "body here") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(captured.String(), "title here") {
+		t.Fatalf("email not sent:\n%s", captured.String())
 	}
 }
