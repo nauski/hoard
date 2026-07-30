@@ -65,6 +65,7 @@ type Agent struct {
 	cancel      context.CancelFunc
 	proc        *os.Process
 	paused      bool
+	kind        string // "backup" or "restore" while running, "" when idle
 	startedAt   time.Time
 	pausedAccum time.Duration // total time spent paused so far
 	pauseStart  time.Time     // when the current pause began (zero if not paused)
@@ -96,6 +97,7 @@ const maxActivity = 300
 type Live struct {
 	Running   bool             `json:"running"`
 	Paused    bool             `json:"paused"`
+	Kind      string           `json:"kind,omitempty"`
 	StartedAt time.Time        `json:"started_at"`
 	Progress  *restic.Progress `json:"progress,omitempty"`
 	Activity  []string         `json:"activity,omitempty"`
@@ -106,6 +108,7 @@ func (a *Agent) Live() Live {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	l := Live{Running: a.running, Paused: a.paused, StartedAt: a.startedAt}
+	l.Kind = a.kind
 	if a.progress != nil {
 		p := *a.progress
 		// restic doesn't report timing — derive elapsed from the start time
@@ -193,6 +196,7 @@ type RunResult struct {
 	StartedAt time.Time            `json:"started_at"`
 	EndedAt   time.Time            `json:"ended_at"`
 	OK        bool                 `json:"ok"`
+	Kind      string               `json:"kind,omitempty"`
 	Message   string               `json:"message"`
 	Summary   *restic.BackupResult `json:"summary,omitempty"`
 	Output    string               `json:"output,omitempty"`
@@ -485,6 +489,96 @@ func (a *Agent) Backup(ctx context.Context) error {
 		rr.Message = "backup completed"
 	}
 	a.log.Info("backup ok", "msg", rr.Message)
+	a.storeRun(rr)
+	return nil
+}
+
+// Restore restores snapID (optionally only subpath) to target. mode "inplace"
+// restores to "/" overwriting originals (if-changed); anything else restores
+// under target. Reuses the single-op lane (Kind=restore), so pause/cancel and
+// the live panel work exactly as for backups.
+func (a *Agent) Restore(ctx context.Context, snapID, subpath, target, mode string) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		cancel()
+		return fmt.Errorf("a backup or restore is already running")
+	}
+	a.running = true
+	a.paused = false
+	a.kind = "restore"
+	a.cancel = cancel
+	a.startedAt = time.Now()
+	a.pausedAccum = 0
+	a.pauseStart = time.Time{}
+	a.activity = nil
+	a.progress = nil
+	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		a.running = false
+		a.paused = false
+		a.kind = ""
+		a.progress = nil
+		a.proc = nil
+		a.cancel = nil
+		a.mu.Unlock()
+		cancel()
+	}()
+
+	overwrite := "always"
+	if mode == "inplace" {
+		target = "/"
+		overwrite = "if-changed"
+	}
+
+	rr := RunResult{StartedAt: time.Now(), Kind: "restore"}
+	cl, err := a.resticClient()
+	if err != nil {
+		rr.EndedAt = time.Now()
+		rr.Message = err.Error()
+		a.storeRun(rr)
+		return err
+	}
+
+	hooks := restic.RestoreHooks{
+		OnProgress: func(p restic.RestoreProgress) {
+			a.mu.Lock()
+			a.progress = &restic.Progress{
+				PercentDone: p.PercentDone, FilesDone: p.FilesRestored, TotalFiles: p.TotalFiles,
+				BytesDone: p.BytesRestored, TotalBytes: p.TotalBytes,
+			}
+			a.mu.Unlock()
+		},
+		OnActivity: func(action, item string) {
+			a.mu.Lock()
+			a.appendActivityLocked(action + "  " + item)
+			a.mu.Unlock()
+		},
+		OnStart: func(p *os.Process) { a.mu.Lock(); a.proc = p; a.mu.Unlock() },
+	}
+	go a.reportLoop(runCtx)
+	res, out, err := cl.Restore(runCtx, snapID, subpath, target, overwrite, false, hooks)
+	rr.EndedAt = time.Now()
+	rr.Output = out
+	if err != nil {
+		rr.OK = false
+		if runCtx.Err() == context.Canceled {
+			rr.Message = "cancelled"
+		} else {
+			rr.Message = err.Error()
+		}
+		a.storeRun(rr)
+		return err
+	}
+	rr.OK = true
+	if res != nil {
+		rr.Message = fmt.Sprintf("restored %d files, %s to %s", res.FilesRestored, humanBytes(res.BytesRestored), target)
+	} else {
+		rr.Message = "restore completed"
+	}
 	a.storeRun(rr)
 	return nil
 }
