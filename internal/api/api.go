@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
@@ -28,6 +29,9 @@ type Server struct {
 	webFS     fs.FS
 	client    *http.Client
 	live      *liveStore
+
+	restoreMu     sync.Mutex
+	restoreCancel context.CancelFunc // cancels the in-flight server restore, if any
 }
 
 func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store *state.Store, log *slog.Logger, webFS fs.FS) *Server {
@@ -61,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("POST /api/purge", s.handlePurge)
 	mux.HandleFunc("POST /api/delete-version", s.handleDeleteVersion)
+	mux.HandleFunc("POST /api/restore", s.handleRestore)
 	// Live running-backup aggregation across all clients.
 	mux.HandleFunc("POST /api/report", s.handleReport)
 	mux.HandleFunc("GET /api/running", s.handleRunning)

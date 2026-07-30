@@ -107,6 +107,16 @@ func (s *Server) handleClientControl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad action"})
 		return
 	}
+	if req.Host == serverRestoreHost && req.Action == "cancel" {
+		s.restoreMu.Lock()
+		c := s.restoreCancel
+		s.restoreMu.Unlock()
+		if c != nil {
+			c()
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued", "action": "cancel"})
+		return
+	}
 	s.live.setCommand(req.Host, req.Action)
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued", "action": req.Action})
 }
