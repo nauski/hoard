@@ -51,6 +51,10 @@ type Repo struct {
 	// S3AccessKeyID / S3SecretAccessKey authenticate to e2; empty for local repos.
 	S3AccessKeyID     string `json:"s3_access_key_id"`
 	S3SecretAccessKey string `json:"s3_secret_access_key"`
+	// LimitUploadKiBps / LimitDownloadKiBps cap restic transfer speed (KiB/s);
+	// 0 = unlimited.
+	LimitUploadKiBps   int `json:"limit_upload_kibps"`
+	LimitDownloadKiBps int `json:"limit_download_kibps"`
 }
 
 // Schedule holds cron-free "daily at HH:MM" times for each recurring job.
