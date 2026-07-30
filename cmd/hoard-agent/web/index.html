@@ -414,21 +414,26 @@ function renderVersions(){
       <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
       <button class="mini act" onclick="startRestore('${s.short_id}')">Restore…</button>
+      <button class="mini danger" onclick="restoreInPlace('${s.short_id}')">Restore in place…</button>
       <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
     </div>`;
   }).join("");
 }
 async function browseVersion(id){ bSnap=id; bDir="/"; renderVersions(); await browseSnap("/"); }
 // Restore a whole version: pick a destination via the shared folder-browser
-// modal (pickFolder), or fall back to an explicit in-place confirm if the
-// user declines to choose a folder.
+// modal (pickFolder). Cancelling the picker aborts the restore — it does NOT
+// fall through to the destructive in-place restore (see restoreInPlace).
 async function startRestore(id){
   const dest = await pickFolder("Choose a destination folder to restore into");
-  if(dest === null){
-    if(!confirm("Restore version "+id+" IN PLACE, overwriting the original files?\nThis replaces current files with the backed-up versions.")) return;
-    return sendRestore(id, "", "inplace");
-  }
+  if(dest === null) return;
   return sendRestore(id, dest, "folder");
+}
+// Destructive in-place restore: a separate, explicitly-labelled entry point
+// gated behind a typed confirm (only the exact string "OVERWRITE" proceeds).
+async function restoreInPlace(id){
+  const t = prompt("DANGER: this OVERWRITES the original files on this machine with version "+id+".\n\nType OVERWRITE to confirm:");
+  if(t !== "OVERWRITE") return;
+  return sendRestore(id, "", "inplace");
 }
 async function sendRestore(id, target, mode){
   $("#msg").textContent="starting restore…";
