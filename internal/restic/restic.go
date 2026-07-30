@@ -464,11 +464,13 @@ type Stats struct {
 	TotalSize      uint64 `json:"total_size"`
 	TotalFileCount uint64 `json:"total_file_count"`
 	SnapshotsCount int    `json:"snapshots_count"`
+	LogicalSize    uint64 `json:"logical_size,omitempty"`
 }
 
-// Stats returns repository size stats (restore-size mode).
-func (c *Client) Stats(ctx context.Context) (*Stats, error) {
-	out, err := c.run(ctx, "stats", "--json", "--mode", "raw-data")
+// StatsMode returns repo size stats for a restic --mode (e.g. "raw-data" for the
+// deduplicated stored size, "restore-size" for the logical size).
+func (c *Client) StatsMode(ctx context.Context, mode string) (*Stats, error) {
+	out, err := c.run(ctx, "stats", "--json", "--mode", mode)
 	if err != nil {
 		return nil, err
 	}
@@ -477,6 +479,11 @@ func (c *Client) Stats(ctx context.Context) (*Stats, error) {
 		return nil, fmt.Errorf("parse stats: %w", err)
 	}
 	return &s, nil
+}
+
+// Stats returns repository size stats (raw-data mode, deduplicated stored size).
+func (c *Client) Stats(ctx context.Context) (*Stats, error) {
+	return c.StatsMode(ctx, "raw-data")
 }
 
 // LsEntry is one file or directory inside a snapshot.

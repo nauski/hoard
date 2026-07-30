@@ -181,18 +181,24 @@ func (s *Server) postWebhook(ctx context.Context, url, title, body string) {
 }
 
 // handleStats returns repository storage totals (deduplicated raw-data size)
-// for the hot and cold repos. Somewhat expensive (reads the index), so the UI
-// calls it infrequently.
+// for the hot and cold repos, along with logical (restore-size) for dedup ratio.
+// Somewhat expensive (reads the index), so the UI calls it infrequently.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	out := map[string]any{}
-	if st, err := s.hot().Stats(ctx); err == nil {
-		out["hot"] = st
+	add := func(key string, c *restic.Client) {
+		st, err := c.StatsMode(ctx, "raw-data")
+		if err != nil {
+			return
+		}
+		if lg, err := c.StatsMode(ctx, "restore-size"); err == nil {
+			st.LogicalSize = lg.TotalSize
+		}
+		out[key] = st
 	}
-	if st, err := s.cold().Stats(ctx); err == nil {
-		out["cold"] = st
-	}
+	add("hot", s.hot())
+	add("cold", s.cold())
 	writeJSON(w, http.StatusOK, out)
 }
 

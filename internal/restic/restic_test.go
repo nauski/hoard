@@ -252,3 +252,31 @@ func TestForgetDryRun(t *testing.T) {
 		t.Fatalf("dry-run deleted snapshots! now have %d", len(all))
 	}
 }
+
+func TestStatsModes(t *testing.T) {
+	c, fixtures := newTestRepo(t)
+	ctx := context.Background()
+
+	// Create a second snapshot with the same data to establish deduplication
+	if _, _, err := c.Backup(ctx, []string{fixtures}, nil, "testhost", nil, BackupHooks{}); err != nil {
+		t.Fatalf("backup 2: %v", err)
+	}
+
+	logical, err := c.StatsMode(ctx, "restore-size")
+	if err != nil {
+		t.Fatalf("restore-size: %v", err)
+	}
+	stored, err := c.StatsMode(ctx, "raw-data")
+	if err != nil {
+		t.Fatalf("raw-data: %v", err)
+	}
+	// Restore-size (logical) should be retrievable and >= some minimum.
+	// Raw-data (stored) should be retrievable and >= some minimum.
+	// Both modes should work and return reasonable values.
+	if logical.TotalSize == 0 {
+		t.Fatalf("restore-size returned zero total_size")
+	}
+	if stored.TotalSize == 0 {
+		t.Fatalf("raw-data returned zero total_size")
+	}
+}
