@@ -41,12 +41,16 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	fmt.Fprintf(&b, "S3 Access Key ID    : %s\n", val(c.Cold.S3AccessKeyID))
 	fmt.Fprintf(&b, "S3 Secret Access Key: %s\n\n", val(c.Cold.S3SecretAccessKey))
 	b.WriteString("Restore (paste into a shell with restic installed):\n")
-	fmt.Fprintf(&b, "  export RESTIC_REPOSITORY='%s'\n", c.Cold.Repository)
-	fmt.Fprintf(&b, "  export RESTIC_PASSWORD='%s'\n", c.Cold.Password)
-	fmt.Fprintf(&b, "  export AWS_ACCESS_KEY_ID='%s'\n", c.Cold.S3AccessKeyID)
-	fmt.Fprintf(&b, "  export AWS_SECRET_ACCESS_KEY='%s'\n", c.Cold.S3SecretAccessKey)
-	b.WriteString("  restic snapshots                      # list what's there\n")
-	b.WriteString("  restic restore latest --target ./restored\n\n")
+	if strings.TrimSpace(c.Cold.Repository) == "" {
+		b.WriteString("  (offsite repo not configured — nothing to restore from here)\n\n")
+	} else {
+		fmt.Fprintf(&b, "  export RESTIC_REPOSITORY='%s'\n", c.Cold.Repository)
+		fmt.Fprintf(&b, "  export RESTIC_PASSWORD='%s'\n", c.Cold.Password)
+		fmt.Fprintf(&b, "  export AWS_ACCESS_KEY_ID='%s'\n", c.Cold.S3AccessKeyID)
+		fmt.Fprintf(&b, "  export AWS_SECRET_ACCESS_KEY='%s'\n", c.Cold.S3SecretAccessKey)
+		b.WriteString("  restic snapshots                      # list what's there\n")
+		b.WriteString("  restic restore latest --target ./restored\n\n")
+	}
 
 	b.WriteString("==================================================================\n")
 	b.WriteString("SECONDARY — LOCAL (hot / NAS rest-server). Only if the NAS dataset\n")
@@ -55,10 +59,14 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	fmt.Fprintf(&b, "Repository          : %s\n", val(c.Hot.Repository))
 	fmt.Fprintf(&b, "Repo password       : %s\n\n", val(c.Hot.Password))
 	b.WriteString("Restore:\n")
-	fmt.Fprintf(&b, "  export RESTIC_REPOSITORY='%s'\n", c.Hot.Repository)
-	fmt.Fprintf(&b, "  export RESTIC_PASSWORD='%s'\n", c.Hot.Password)
-	b.WriteString("  restic snapshots\n")
-	b.WriteString("  restic restore latest --target ./restored\n")
+	if strings.TrimSpace(c.Hot.Repository) == "" {
+		b.WriteString("  (local repo not configured — nothing to restore from here)\n")
+	} else {
+		fmt.Fprintf(&b, "  export RESTIC_REPOSITORY='%s'\n", c.Hot.Repository)
+		fmt.Fprintf(&b, "  export RESTIC_PASSWORD='%s'\n", c.Hot.Password)
+		b.WriteString("  restic snapshots\n")
+		b.WriteString("  restic restore latest --target ./restored\n")
+	}
 
 	return b.String()
 }

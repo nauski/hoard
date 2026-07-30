@@ -43,3 +43,22 @@ func TestBuildRecoveryKitUnconfiguredCold(t *testing.T) {
 		t.Fatalf("expected 'not configured' marker for empty cold repo\n---\n%s", out)
 	}
 }
+
+func TestBuildRecoveryKitPartialCold(t *testing.T) {
+	c := testKitConfig()
+	c.Cold = config.Repo{Password: "coldpw"} // repository is empty, password is set
+	out := buildRecoveryKit(c, "0.18.0", time.Unix(0, 0).UTC())
+	if strings.Contains(out, "export RESTIC_REPOSITORY=''") {
+		t.Fatal("kit has misleading blank export for unconfigured repository")
+	}
+	if !strings.Contains(out, "not configured") {
+		t.Fatalf("expected 'not configured' marker for partial cold repo\n---\n%s", out)
+	}
+}
+
+func TestBuildRecoveryKitHasSecurityWarning(t *testing.T) {
+	out := buildRecoveryKit(testKitConfig(), "0.18.0", time.Unix(0, 0).UTC())
+	if !strings.Contains(out, "SENSITIVE") {
+		t.Fatalf("expected 'SENSITIVE' warning in kit\n---\n%s", out)
+	}
+}
