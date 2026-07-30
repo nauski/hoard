@@ -1,6 +1,7 @@
 package restic
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -254,29 +255,40 @@ func TestForgetDryRun(t *testing.T) {
 }
 
 func TestStatsModes(t *testing.T) {
-	c, fixtures := newTestRepo(t)
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not on PATH")
+	}
+
+	// Build a repo with a large, highly-compressible fixture to robustly test both modes.
+	// 4 MiB of zeros will compress to a few KB, so restore-size (logical) >> raw-data (stored).
+	repoDir := t.TempDir()
+	fixtures := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixtures, "big.dat"), bytes.Repeat([]byte{0}, 4<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New("restic", config.Repo{Repository: repoDir, Password: "test"})
 	ctx := context.Background()
-
-	// Create a second snapshot with the same data to establish deduplication
+	if err := c.EnsureInit(ctx); err != nil {
+		t.Fatalf("init: %v", err)
+	}
 	if _, _, err := c.Backup(ctx, []string{fixtures}, nil, "testhost", nil, BackupHooks{}); err != nil {
-		t.Fatalf("backup 2: %v", err)
+		t.Fatalf("backup: %v", err)
 	}
 
-	logical, err := c.StatsMode(ctx, "restore-size")
-	if err != nil {
-		t.Fatalf("restore-size: %v", err)
-	}
+	// Get stats in both modes and verify restore-size exceeds raw-data due to decompression.
 	stored, err := c.StatsMode(ctx, "raw-data")
 	if err != nil {
 		t.Fatalf("raw-data: %v", err)
 	}
-	// Restore-size (logical) should be retrievable and >= some minimum.
-	// Raw-data (stored) should be retrievable and >= some minimum.
-	// Both modes should work and return reasonable values.
-	if logical.TotalSize == 0 {
-		t.Fatalf("restore-size returned zero total_size")
+	logical, err := c.StatsMode(ctx, "restore-size")
+	if err != nil {
+		t.Fatalf("restore-size: %v", err)
 	}
-	if stored.TotalSize == 0 {
-		t.Fatalf("raw-data returned zero total_size")
+
+	// Logical (restore-size) is >= deduplicated stored size.
+	// With 4 MiB of zeros, logical ~4 MiB while stored << 1 MiB after compression.
+	if logical.TotalSize < stored.TotalSize {
+		t.Fatalf("logical %d < stored %d; modes may not be working correctly", logical.TotalSize, stored.TotalSize)
 	}
 }
