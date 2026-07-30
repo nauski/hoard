@@ -100,3 +100,19 @@ func TestAckKitSetsFlag(t *testing.T) {
 		t.Fatalf("expected recovery_kit_ack:true after ack: %s", w.Body.String())
 	}
 }
+
+func TestHandleRecoveryKit(t *testing.T) {
+	srv := newKitServer(t)
+	w := httptest.NewRecorder()
+	srv.handleRecoveryKit(w, httptest.NewRequest(http.MethodGet, "/api/recovery-kit", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") ||
+		!strings.Contains(cd, "hoard-recovery-kit.txt") {
+		t.Fatalf("bad Content-Disposition: %q", cd)
+	}
+	if !strings.Contains(w.Body.String(), "s3:https://s3.example.com/mybucket") {
+		t.Fatalf("kit body missing configured repo:\n%s", w.Body.String())
+	}
+}

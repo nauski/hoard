@@ -72,6 +72,16 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	return b.String()
 }
 
+// handleRecoveryKit streams the recovery kit as a download. The body is NEVER
+// logged (it contains secrets), and nothing is accepted via query string.
+func (s *Server) handleRecoveryKit(w http.ResponseWriter, r *http.Request) {
+	kit := buildRecoveryKit(s.cfg.Load(), resticVersion, time.Now())
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="hoard-recovery-kit.txt"`)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(kit))
+}
+
 // handleAckKit records that the user saved their recovery kit, dismissing the
 // dashboard reminder. Idempotent.
 func (s *Server) handleAckKit(w http.ResponseWriter, r *http.Request) {
