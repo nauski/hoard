@@ -32,6 +32,10 @@ type Config struct {
 
 	// StatePath is where run history is persisted across restarts.
 	StatePath string `json:"state_path"`
+
+	// RecoveryKitAck records that the user confirmed saving their recovery kit
+	// (dismisses the dashboard reminder). Purely a UI nudge; no security effect.
+	RecoveryKitAck bool `json:"recovery_kit_ack"`
 }
 
 // Repo describes a single restic repository and the credentials to open it.

@@ -130,6 +130,13 @@
       <div><label class="sub">&nbsp;</label><label><input type="checkbox" id="cfgOnStale"> alert when a client goes stale</label></div>
     </div>
     <div class="sub" style="margin:12px 0 8px">Offsite storage — any S3-compatible provider (IDrive e2, AWS S3, Backblaze B2, Wasabi, MinIO, Cloudflare R2…)</div>
+    <div id="kitBanner" class="card" style="display:none;border-color:var(--warn);background:rgba(210,153,34,.08);margin-bottom:12px">
+      <b>⚠ Save your recovery kit.</b> <span class="sub">Without your repository password, your backups can't be recovered — not even by hoard. Download this file and store it in a password manager.</span>
+      <div class="bar" style="margin-top:8px">
+        <button onclick="downloadKit()">Download recovery kit</button>
+        <button class="secondary" onclick="ackKit()">I've saved it safely ✓</button>
+      </div>
+    </div>
     <div class="setgrid">
       <div style="grid-column:1/-1"><label class="sub">Repository (restic S3 URL: <span class="mono">s3:https://ENDPOINT/BUCKET</span>)</label><input id="cfgColdRepo" type="text" placeholder="s3:https://s3.us-west-1.amazonaws.com/my-bucket"></div>
       <div><label class="sub">S3 access key ID</label><input id="cfgColdKey" type="text"></div>
@@ -140,6 +147,7 @@
       <button onclick="saveConfig()">Save settings</button>
       <button class="secondary" onclick="testCold()">Test storage connection</button>
       <button class="secondary" onclick="initCold()">Initialize repository</button>
+      <button class="secondary" onclick="downloadKit()">Download recovery kit</button>
       <span class="sub" id="cfgMsg"></span>
     </div>
     <div class="sub" style="margin-top:6px">↳ "Test" and "Initialize" save the fields above first, so they always use exactly what you've typed. "Initialize repository" creates a fresh restic repo in an <b>empty</b> bucket (needed once when pointing at new storage); harmless if the repo already exists.</div>
@@ -448,7 +456,16 @@ async function loadConfig(){
     $("#cfgPwHint").textContent=c.cold&&c.cold.password_set?"(set)":"(not set)";
     $("#cfgHotRepo").textContent=c.hot_repo||"—";
     $("#cfgSecrets").textContent="hot repo password: "+(c.hot_password_set?"✓ set":"✗ not set");
+    const kb=$("#kitBanner"); if(kb) kb.style.display = c.recovery_kit_ack ? "none" : "block";
   }catch(e){}
+}
+function downloadKit(){
+  if(!confirm("The recovery kit contains your repository password and S3 secret in PLAINTEXT.\n\nStore it in a password manager. Never share it. Anyone with this file can read or delete your backups.\n\nDownload now?")) return;
+  window.location = "/api/recovery-kit";
+}
+async function ackKit(){
+  await fetch("/api/config/ack-kit",{method:"POST"});
+  const b=$("#kitBanner"); if(b) b.style.display="none";
 }
 async function saveConfig(){
   const wd=$("#cfgWeekday").value.trim();

@@ -26,6 +26,7 @@ type configResponse struct {
 	HotRepo        string           `json:"hot_repo"`
 	HotPasswordSet bool             `json:"hot_password_set"`
 	Cold           coldView         `json:"cold"`
+	RecoveryKitAck bool             `json:"recovery_kit_ack"`
 }
 
 func (s *Server) configView() configResponse {
@@ -42,6 +43,7 @@ func (s *Server) configView() configResponse {
 			PasswordSet:   c.Cold.Password != "",
 			SecretSet:     c.Cold.S3SecretAccessKey != "",
 		},
+		RecoveryKitAck: c.RecoveryKitAck,
 	}
 }
 
