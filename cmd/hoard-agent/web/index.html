@@ -73,6 +73,11 @@
   .ditem .addbtn{background:transparent;border:1px solid var(--accent);color:var(--accent);border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer}
   .mfoot{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between}
   .mfoot .sub{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .help{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--line);color:var(--muted);font-size:10px;font-style:normal;line-height:1;cursor:help;position:relative;vertical-align:middle;margin-left:5px;user-select:none}
+  .help:hover,.help:focus{color:var(--accent);border-color:var(--accent);outline:none}
+  .help::after{content:attr(data-tip);position:absolute;bottom:150%;left:50%;transform:translateX(-50%);background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;font-weight:400;line-height:1.45;width:max-content;max-width:260px;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.35);opacity:0;visibility:hidden;transition:opacity .12s;z-index:60;pointer-events:none}
+  .help:hover::after,.help:focus::after{opacity:1;visibility:visible}
+  .help.below::after{top:150%;bottom:auto}
 </style>
 </head>
 <body>
@@ -94,7 +99,7 @@
   <div class="card">
     <div class="bar">
       <button id="save" class="ghost" onclick="save()">Save settings</button>
-      <button id="now" class="primary" onclick="backup()">Back up now</button>
+      <button id="now" class="primary" onclick="backup()">Back up now</button><span class="help below" tabindex="0" data-tip="Run a backup now. restic auto-retries within a run; a fully-failed run stays failed until you retry here.">ⓘ</span>
       <span id="msg" class="msg sub"></span>
     </div>
   </div>
@@ -128,7 +133,7 @@
 
   <section class="tab" id="tab-browse">
   <div class="card">
-    <h2>Browse &amp; manage your backups</h2>
+    <h2>Browse &amp; manage your backups<span class="help below" tabindex="0" data-tip="Browse past versions; restore or download files, or delete a version.">ⓘ</span></h2>
     <div id="bVersions"><div class="sub">loading versions…</div></div>
     <div id="bFiles" style="margin-top:12px"></div>
   </div>
@@ -137,21 +142,21 @@
   <section class="tab" id="tab-settings">
   <div class="card">
     <h2>Settings — where this machine backs up to</h2>
-    <label>Backup server (restic REST URL) — the hoard server's push endpoint</label>
+    <label>Backup server (restic REST URL) — the hoard server's push endpoint<span class="help below" tabindex="0" data-tip="The hoard server's push endpoint on your NAS. Your backups upload here over the LAN.">ⓘ</span></label>
     <input id="repo" type="text" placeholder="rest:http://truenas:8000/hot" />
     <div class="grid2">
       <div>
-        <label>Password file (leave blank to use RESTIC_PASSWORD env)</label>
+        <label>Password file (leave blank to use RESTIC_PASSWORD env)<span class="help" tabindex="0" data-tip="Path to the file holding your repo password (usually sops-provisioned). Blank = use the RESTIC_PASSWORD env var.">ⓘ</span></label>
         <input id="pwfile" type="text" placeholder="/run/secrets/hoard_hot_password" />
       </div>
       <div>
-        <label>Daily backup time (HH:MM, blank = manual only)</label>
+        <label>Daily backup time (HH:MM, blank = manual only)<span class="help" tabindex="0" data-tip="When to auto-run a backup each day (HH:MM). Blank = manual only.">ⓘ</span></label>
         <input id="sched" type="text" placeholder="21:00" />
       </div>
     </div>
     <div class="grid2">
       <div>
-        <label>Backup upload limit (KiB/s, 0 = unlimited)</label>
+        <label>Backup upload limit (KiB/s, 0 = unlimited)<span class="help" tabindex="0" data-tip="Cap restic transfer speed in KiB/s. 0 = unlimited.">ⓘ</span></label>
         <input id="limUp" type="number" min="0" placeholder="0" />
       </div>
       <div>
@@ -162,7 +167,7 @@
   </div>
 
   <div class="card">
-    <h2>What to back up</h2>
+    <h2>What to back up<span class="help" tabindex="0" data-tip="Folders and files on this machine to include in backups. Use the folder picker to add them.">ⓘ</span></h2>
     <div id="paths" class="list"></div>
     <div class="bar" style="margin-top:6px">
       <button class="add" onclick="openBrowse()">📁 Browse…</button>
@@ -171,7 +176,7 @@
   </div>
 
   <div class="card">
-    <h2>Excludes (restic patterns)</h2>
+    <h2>Excludes (restic patterns)<span class="help" tabindex="0" data-tip="restic patterns to skip — e.g. caches, node_modules, temp files.">ⓘ</span></h2>
     <div id="excludes" class="list"></div>
     <button class="add" onclick="addRow('excludes','')">+ add exclude</button>
   </div>
