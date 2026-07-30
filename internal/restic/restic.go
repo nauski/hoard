@@ -260,6 +260,116 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 	return result, out, nil
 }
 
+// RestoreProgress mirrors restic restore's --json "status" message.
+type RestoreProgress struct {
+	PercentDone    float64 `json:"percent_done"`
+	FilesRestored  int     `json:"files_restored"`
+	TotalFiles     int     `json:"total_files"`
+	BytesRestored  uint64  `json:"bytes_restored"`
+	TotalBytes     uint64  `json:"total_bytes"`
+	SecondsElapsed int     `json:"seconds_elapsed"`
+}
+
+// RestoreResult is restic restore's final --json "summary".
+type RestoreResult struct {
+	TotalFiles    int    `json:"total_files"`
+	FilesRestored int    `json:"files_restored"`
+	TotalBytes    uint64 `json:"total_bytes"`
+	BytesRestored uint64 `json:"bytes_restored"`
+}
+
+// RestoreHooks are optional callbacks fired during a restore (same pattern as
+// BackupHooks) so callers can show live status and control the process.
+type RestoreHooks struct {
+	OnProgress func(RestoreProgress)
+	OnActivity func(action, item string)
+	OnStart    func(*os.Process)
+}
+
+// Restore restores snapID (optionally only subpath) into target. overwrite is
+// one of always|if-changed|if-newer|never. If verify is set, restic re-reads
+// restored files and checks their content against the repo. Cancel via ctx.
+func (c *Client) Restore(ctx context.Context, snapID, subpath, target, overwrite string, verify bool, hooks RestoreHooks) (*RestoreResult, string, error) {
+	if target == "" {
+		return nil, "", fmt.Errorf("no restore target")
+	}
+	if overwrite == "" {
+		overwrite = "always"
+	}
+	spec := snapID
+	if subpath != "" {
+		spec = snapID + ":" + subpath
+	}
+	args := []string{"restore", spec, "--target", target, "--overwrite", overwrite, "--json", "--verbose"}
+	if verify {
+		args = append(args, "--verify")
+	}
+
+	cmd := exec.CommandContext(ctx, c.bin, args...)
+	cmd.Env = append(cmd.Environ(), c.env()...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, "", err
+	}
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Start(); err != nil {
+		return nil, "", err
+	}
+	if hooks.OnStart != nil && cmd.Process != nil {
+		hooks.OnStart(cmd.Process)
+	}
+
+	var result *RestoreResult
+	var tailLines []string
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		var probe struct {
+			MessageType string `json:"message_type"`
+		}
+		if json.Unmarshal(line, &probe) != nil {
+			continue
+		}
+		switch probe.MessageType {
+		case "status":
+			if hooks.OnProgress != nil {
+				var p RestoreProgress
+				if json.Unmarshal(line, &p) == nil {
+					hooks.OnProgress(p)
+				}
+			}
+		case "verbose_status":
+			if hooks.OnActivity != nil {
+				var v struct {
+					Action string `json:"action"`
+					Item   string `json:"item"`
+				}
+				if json.Unmarshal(line, &v) == nil && v.Item != "" {
+					hooks.OnActivity(v.Action, v.Item)
+				}
+			}
+		case "summary":
+			var s RestoreResult
+			if json.Unmarshal(line, &s) == nil {
+				result = &s
+			}
+			tailLines = appendTail(tailLines, string(line))
+		case "error":
+			tailLines = appendTail(tailLines, string(line))
+		}
+	}
+
+	waitErr := cmd.Wait()
+	out := strings.Join(tailLines, "\n")
+	if waitErr != nil {
+		msg := strings.TrimSpace(errb.String())
+		return result, out, fmt.Errorf("restic restore: %w: %s", waitErr, msg)
+	}
+	return result, out, nil
+}
+
 // appendTail keeps the most recent ~20 non-status lines for diagnostics.
 func appendTail(lines []string, s string) []string {
 	lines = append(lines, s)
