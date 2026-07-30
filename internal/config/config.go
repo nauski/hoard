@@ -36,6 +36,9 @@ type Config struct {
 	// RecoveryKitAck records that the user confirmed saving their recovery kit
 	// (dismisses the dashboard reminder). Purely a UI nudge; no security effect.
 	RecoveryKitAck bool `json:"recovery_kit_ack"`
+
+	// SMTP is the optional email alert channel.
+	SMTP SMTP `json:"smtp"`
 }
 
 // Repo describes a single restic repository and the credentials to open it.
@@ -84,6 +87,18 @@ type Alert struct {
 	OnFailure bool `json:"on_failure"`
 	// FailureThreshold is the number of consecutive failed backups before alerting.
 	FailureThreshold int `json:"failure_threshold"`
+}
+
+// SMTP configures the optional email alert channel. Password is an app password
+// (a secret); it is persisted to the 0600 config file and shown write-only in the
+// UI. Empty Host/From/To disables email.
+type SMTP struct {
+	Host     string `json:"host"`     // e.g. smtp.gmail.com
+	Port     string `json:"port"`     // e.g. 587 (blank -> 587)
+	Username string `json:"username"`
+	Password string `json:"password"` // app password (secret)
+	From     string `json:"from"`
+	To       string `json:"to"`
 }
 
 // Duration is a JSON-friendly time.Duration ("24h", "30m").

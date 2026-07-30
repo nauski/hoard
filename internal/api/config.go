@@ -19,6 +19,17 @@ type coldView struct {
 	SecretSet     bool   `json:"secret_set"`
 }
 
+// smtpView is the editable email-alert config. The password is write-only:
+// its value never leaves the server, only whether it is set.
+type smtpView struct {
+	Host        string `json:"host"`
+	Port        string `json:"port"`
+	Username    string `json:"username"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+	PasswordSet bool   `json:"password_set"`
+}
+
 type configResponse struct {
 	Schedule       config.Schedule  `json:"schedule"`
 	Retention      config.Retention `json:"retention"`
@@ -26,6 +37,7 @@ type configResponse struct {
 	HotRepo        string           `json:"hot_repo"`
 	HotPasswordSet bool             `json:"hot_password_set"`
 	Cold           coldView         `json:"cold"`
+	SMTP           smtpView         `json:"smtp"`
 	RecoveryKitAck bool             `json:"recovery_kit_ack"`
 }
 
@@ -42,6 +54,10 @@ func (s *Server) configView() configResponse {
 			S3AccessKeyID: c.Cold.S3AccessKeyID,
 			PasswordSet:   c.Cold.Password != "",
 			SecretSet:     c.Cold.S3SecretAccessKey != "",
+		},
+		SMTP: smtpView{
+			Host: c.SMTP.Host, Port: c.SMTP.Port, Username: c.SMTP.Username,
+			From: c.SMTP.From, To: c.SMTP.To, PasswordSet: c.SMTP.Password != "",
 		},
 		RecoveryKitAck: c.RecoveryKitAck,
 	}
@@ -67,6 +83,9 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			S3SecretAccessKey *string `json:"s3_secret_access_key"`
 			Password          *string `json:"password"`
 		} `json:"cold"`
+		SMTP *struct {
+			Host, Port, Username, From, To, Password string
+		} `json:"smtp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -94,6 +113,16 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.Cold.Password != nil && *req.Cold.Password != "" {
 				c.Cold.Password = *req.Cold.Password
+			}
+		}
+		if req.SMTP != nil {
+			c.SMTP.Host = req.SMTP.Host
+			c.SMTP.Port = req.SMTP.Port
+			c.SMTP.Username = req.SMTP.Username
+			c.SMTP.From = req.SMTP.From
+			c.SMTP.To = req.SMTP.To
+			if req.SMTP.Password != "" {
+				c.SMTP.Password = req.SMTP.Password
 			}
 		}
 	})

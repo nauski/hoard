@@ -131,6 +131,16 @@
       <div><label class="sub">&nbsp;</label><label><input type="checkbox" id="cfgOnFailure"> alert on repeated backup failures</label></div>
       <div><label class="sub">Failure threshold</label><input id="cfgFailThresh" type="text" style="width:60px" placeholder="3"></div>
     </div>
+    <div class="sub" style="margin-top:10px;font-weight:600">Email (SMTP) alerts</div>
+    <div class="setgrid">
+      <div><label class="sub">SMTP host</label><input id="cfgSmtpHost" type="text" placeholder="smtp.gmail.com"></div>
+      <div><label class="sub">Port</label><input id="cfgSmtpPort" type="text" placeholder="587"></div>
+      <div><label class="sub">Username</label><input id="cfgSmtpUser" type="text" placeholder="you@gmail.com"></div>
+      <div><label class="sub">Password / app password <span id="cfgSmtpPwHint" class="sub"></span></label><input id="cfgSmtpPass" type="password" placeholder="leave blank to keep"></div>
+      <div><label class="sub">From</label><input id="cfgSmtpFrom" type="text" placeholder="you@gmail.com"></div>
+      <div><label class="sub">To</label><input id="cfgSmtpTo" type="text" placeholder="you@gmail.com"></div>
+    </div>
+    <div class="bar" style="margin-top:8px"><button class="secondary" onclick="testEmail()">Send test email</button><span class="sub" id="cfgEmailMsg"></span></div>
     <div class="sub" style="margin:12px 0 8px">Offsite storage — any S3-compatible provider (IDrive e2, AWS S3, Backblaze B2, Wasabi, MinIO, Cloudflare R2…)</div>
     <div id="kitBanner" class="card" style="display:none;border-color:var(--warn);background:rgba(210,153,34,.08);margin-bottom:12px">
       <b>⚠ Save your recovery kit.</b> <span class="sub">Without your repository password, your backups can't be recovered — not even by hoard. Download this file and store it in a password manager.</span>
@@ -461,6 +471,10 @@ async function loadConfig(){
     $("#cfgOnStale").checked=!!c.alert.on_stale;
     $("#cfgOnFailure").checked=!!c.alert.on_failure;
     $("#cfgFailThresh").value=c.alert.failure_threshold||3;
+    const sm=c.smtp||{};
+    $("#cfgSmtpHost").value=sm.host||""; $("#cfgSmtpPort").value=sm.port||"";
+    $("#cfgSmtpUser").value=sm.username||""; $("#cfgSmtpFrom").value=sm.from||""; $("#cfgSmtpTo").value=sm.to||"";
+    $("#cfgSmtpPass").value=""; $("#cfgSmtpPwHint").textContent=sm.password_set?"(set)":"(not set)";
     $("#cfgColdRepo").value=(c.cold&&c.cold.repository)||"";
     $("#cfgColdKey").value=(c.cold&&c.cold.s3_access_key_id)||"";
     $("#cfgColdSecret").value=""; $("#cfgColdPw").value="";
@@ -489,6 +503,8 @@ async function saveConfig(){
     retention:{keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")},
     alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked,
       on_failure:$("#cfgOnFailure").checked,failure_threshold:(parseInt($("#cfgFailThresh").value,10)||3)},
+    smtp:{host:$("#cfgSmtpHost").value.trim(),port:$("#cfgSmtpPort").value.trim(),username:$("#cfgSmtpUser").value.trim(),
+      from:$("#cfgSmtpFrom").value.trim(),to:$("#cfgSmtpTo").value.trim(),password:$("#cfgSmtpPass").value},
     cold:{repository:$("#cfgColdRepo").value.trim(),s3_access_key_id:$("#cfgColdKey").value.trim(),
       s3_secret_access_key:$("#cfgColdSecret").value, password:$("#cfgColdPw").value}
   };
@@ -510,6 +526,15 @@ async function testCold(){
     const j=await (await fetch("/api/config/test-cold",{method:"POST"})).json();
     $("#cfgMsg").textContent=j.ok?"storage reachable ✓":("storage error: "+(j.error||"unreachable"));
   }catch(e){ $("#cfgMsg").textContent="test failed"; }
+}
+async function testEmail(){
+  $("#cfgEmailMsg").textContent="saving settings…";
+  if(!(await saveConfig())) return;               // don't test against unsaved edits
+  $("#cfgEmailMsg").textContent="sending test email…";
+  try{
+    const j=await (await fetch("/api/config/test-email",{method:"POST"})).json();
+    $("#cfgEmailMsg").textContent=j.ok?"sent ✓ — check your inbox":("error: "+(j.error||"failed"));
+  }catch(e){ $("#cfgEmailMsg").textContent="test failed"; }
 }
 async function initCold(){
   if(!confirm("Initialize a fresh restic repository in the configured bucket?\n\nThis saves the endpoint, keys, and repo password you've entered, then creates the repo. Only do this for a NEW, EMPTY bucket — it's a no-op if a repo already exists there. Store the repo password somewhere safe: losing it makes the backups unrecoverable.")) return;
