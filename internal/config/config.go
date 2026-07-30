@@ -80,6 +80,10 @@ type Alert struct {
 	WebhookURL string `json:"webhook_url"`
 	// OnStale sends an alert when a client repo crosses StaleAfter.
 	OnStale bool `json:"on_stale"`
+	// OnFailure sends an alert when a client's backups fail repeatedly.
+	OnFailure bool `json:"on_failure"`
+	// FailureThreshold is the number of consecutive failed backups before alerting.
+	FailureThreshold int `json:"failure_threshold"`
 }
 
 // Duration is a JSON-friendly time.Duration ("24h", "30m").
@@ -116,6 +120,7 @@ func Load(path string) (*Config, error) {
 		StatePath:  "/data/hoard-state.json",
 		Schedule:   Schedule{StaleAfter: Duration(26 * time.Hour)},
 		Retention:  Retention{Daily: 7, Weekly: 4, Monthly: 6},
+		Alert:      Alert{OnFailure: true, FailureThreshold: 3},
 	}
 	if path != "" {
 		raw, err := os.ReadFile(path)
