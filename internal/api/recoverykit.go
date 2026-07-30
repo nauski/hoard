@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -69,4 +70,14 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	}
 
 	return b.String()
+}
+
+// handleAckKit records that the user saved their recovery kit, dismissing the
+// dashboard reminder. Idempotent.
+func (s *Server) handleAckKit(w http.ResponseWriter, r *http.Request) {
+	if err := s.cfg.Update(func(c *config.Config) { c.RecoveryKitAck = true }); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.configView())
 }
