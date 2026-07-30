@@ -14,7 +14,7 @@
   header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
   header .repo { color:var(--muted); font-size:12px; margin-left:auto; text-align:right; }
   .themebtn{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:15px;line-height:1}
-  main { padding:24px; max-width:1100px; margin:0 auto; display:grid; gap:20px; }
+  main { padding:24px; max-width:1100px; margin:0 auto; }
   .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 10px; }
@@ -67,6 +67,12 @@
   .mini2.danger{border-color:rgba(248,81,73,.5);color:var(--bad)}
   .term{background:var(--term-bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;height:220px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:var(--term-fg);margin-top:10px}
   .term .a-new{color:#3fb950}.term .a-changed{color:#d29922}.term .a-unchanged{color:#6e7681}.term .a-error{color:#f85149}.term .a-meta{color:#58a6ff}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);padding:0 24px;max-width:1100px;margin:12px auto 0}
+  .tab-btn{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--muted);padding:10px 14px;cursor:pointer;font-weight:600;font-size:13px;border-radius:0}
+  .tab-btn:hover{color:var(--fg)}
+  .tab-btn.active{color:var(--fg);border-bottom-color:var(--accent)}
+  .tab{display:none}
+  .tab.active{display:grid;gap:20px}
 </style>
 </head>
 <body>
@@ -81,7 +87,14 @@
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
 </header>
 
+<nav class="tabs">
+  <button class="tab-btn" data-tab="overview" onclick="showTab('overview')">Overview</button>
+  <button class="tab-btn" data-tab="browse" onclick="showTab('browse')">Browse</button>
+  <button class="tab-btn" data-tab="settings" onclick="showTab('settings')">Settings</button>
+</nav>
+
 <main>
+<section class="tab" id="tab-overview">
   <div class="row" id="jobCards"></div>
 
   <div class="card" id="runningCard" style="display:none">
@@ -106,6 +119,30 @@
     <p class="sub" id="actionMsg"></p>
   </div>
 
+  <div class="card">
+    <h2>Recent jobs</h2>
+    <table>
+      <thead><tr><th>Job</th><th>When</th><th>Duration</th><th>Result</th><th>Message</th></tr></thead>
+      <tbody id="history"><tr><td colspan="5" class="sub">loading…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="tab" id="tab-browse">
+  <div class="card">
+    <h2>Backup browser</h2>
+    <div class="bar">
+      <label class="sub">Client:</label>
+      <select id="bClient" onchange="selectClient(this.value)"><option value="">— select a client —</option></select>
+      <span class="sub" id="bHint">pick a client to see its backup versions</span>
+    </div>
+    <div id="bVersions" style="margin-top:14px"></div>
+    <div id="diffOut" class="sub" style="margin-top:8px"></div>
+    <div id="bFiles" style="margin-top:14px"></div>
+  </div>
+</section>
+
+<section class="tab" id="tab-settings">
   <div class="card">
     <h2>Settings</h2>
     <div class="sub" style="margin-bottom:8px">Schedule</div>
@@ -169,26 +206,7 @@
     <div class="sub" style="margin-top:6px">↳ "Test" and "Initialize" save the fields above first, so they always use exactly what you've typed. "Initialize repository" creates a fresh restic repo in an <b>empty</b> bucket (needed once when pointing at new storage); harmless if the repo already exists.</div>
     <div class="sub" style="margin-top:10px">Hot repo (local staging, deploy-time): <span class="mono" id="cfgHotRepo">—</span> · <span id="cfgSecrets"></span></div>
   </div>
-
-  <div class="card">
-    <h2>Backup browser</h2>
-    <div class="bar">
-      <label class="sub">Client:</label>
-      <select id="bClient" onchange="selectClient(this.value)"><option value="">— select a client —</option></select>
-      <span class="sub" id="bHint">pick a client to see its backup versions</span>
-    </div>
-    <div id="bVersions" style="margin-top:14px"></div>
-    <div id="diffOut" class="sub" style="margin-top:8px"></div>
-    <div id="bFiles" style="margin-top:14px"></div>
-  </div>
-
-  <div class="card">
-    <h2>Recent jobs</h2>
-    <table>
-      <thead><tr><th>Job</th><th>When</th><th>Duration</th><th>Result</th><th>Message</th></tr></thead>
-      <tbody id="history"><tr><td colspan="5" class="sub">loading…</td></tr></tbody>
-    </table>
-  </div>
+</section>
 
   <div class="foot">hoard · auto-refreshes every 5s</div>
 </main>
@@ -223,6 +241,24 @@ const $ = s => document.querySelector(s);
 function themeIcon(){ const b=document.getElementById('themeToggle'); if(b) b.textContent=document.documentElement.getAttribute('data-theme')==='light'?'☀️':'🌙'; }
 function toggleTheme(){ const next=document.documentElement.getAttribute('data-theme')==='light'?'dark':'light'; document.documentElement.setAttribute('data-theme',next); try{localStorage.setItem('hoard-theme',next);}catch(e){} themeIcon(); }
 themeIcon();
+
+// ---------------- Tabs ----------------
+const TABS=["overview","browse","settings"];
+function showTab(name){
+  if(!TABS.includes(name)) name="overview";
+  TABS.forEach(t=>{
+    const s=document.getElementById("tab-"+t); if(s) s.classList.toggle("active", t===name);
+    const b=document.querySelector('.tab-btn[data-tab="'+t+'"]'); if(b) b.classList.toggle("active", t===name);
+  });
+  try{ localStorage.setItem("hoard-tab", name); }catch(e){}
+  if(location.hash.replace("#","")!==name){ history.replaceState(null,"","#"+name); }
+}
+(function(){
+  const h=(location.hash||"").replace("#","");
+  let saved=null; try{ saved=localStorage.getItem("hoard-tab"); }catch(e){}
+  showTab(TABS.includes(h)?h:(TABS.includes(saved)?saved:"overview"));
+})();
+
 const fmt = t => t ? new Date(t).toLocaleString() : "never";
 const zero = "0001-01-01T00:00:00Z";
 function age(t){
