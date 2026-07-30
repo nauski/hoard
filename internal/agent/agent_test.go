@@ -106,3 +106,26 @@ func TestAgentConfigRoundTripsLimits(t *testing.T) {
 		t.Fatalf("limits not round-tripped: %+v", c)
 	}
 }
+
+func TestSetConfigPreservesUnsentFields(t *testing.T) {
+	a := &Agent{
+		cfgPath: t.TempDir() + "/c.json",
+		log:     slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		cfg:     Config{Host: "h", ServerURL: "http://srv:8080", Tags: []string{"mytag"}},
+	}
+	// A settings save that omits ServerURL and Tags (as the agent UI does) must
+	// not wipe them.
+	if err := a.SetConfig(Config{Repository: "rest:http://x", Host: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	c := a.GetConfig()
+	if c.ServerURL != "http://srv:8080" {
+		t.Fatalf("ServerURL wiped: %q", c.ServerURL)
+	}
+	if len(c.Tags) != 1 || c.Tags[0] != "mytag" {
+		t.Fatalf("Tags wiped: %v", c.Tags)
+	}
+	if c.Repository != "rest:http://x" {
+		t.Fatalf("Repository not set: %q", c.Repository)
+	}
+}

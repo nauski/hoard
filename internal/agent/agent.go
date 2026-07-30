@@ -386,13 +386,22 @@ func (a *Agent) GetConfig() Config {
 func (a *Agent) SetConfig(c Config) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// Preserve fields not exposed for edit if the caller left them blank.
+	// Preserve fields not exposed for edit if the caller left them blank (the GUI
+	// posts only the fields it renders, so Host/ServerURL/Tags would otherwise be
+	// wiped on every save). Paths/Excludes ARE editable, so an empty value there
+	// is an intentional clear and is kept as sent.
 	if c.Host == "" {
 		c.Host = a.cfg.Host
+	}
+	if c.ServerURL == "" {
+		c.ServerURL = a.cfg.ServerURL
 	}
 	c.Paths = cleanList(c.Paths)
 	c.Excludes = cleanList(c.Excludes)
 	c.Tags = cleanList(c.Tags)
+	if len(c.Tags) == 0 {
+		c.Tags = a.cfg.Tags
+	}
 	a.cfg = c
 	return a.persist()
 }
