@@ -10,7 +10,7 @@ import (
 	"github.com/nauski/hoard/internal/restic"
 )
 
-const serverRestoreHost = "server (restore)"
+const serverRestoreHost = "server-restore"
 
 // handleRestore restores from the hot repo to a NAS path, async, with progress
 // streamed to the "Running backups" panel via the liveStore.

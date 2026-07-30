@@ -539,7 +539,8 @@ async function loadRunning(){
       $("#runningList").appendChild(el);
     }
     $("#rh-"+c.host).textContent=c.host;
-    const badge=$("#rb-"+c.host); badge.textContent=L.paused?"paused":"backing up"; badge.className="badge "+(L.paused?"b-warn":"b-ok");
+    const verb = (L.kind === "restore") ? "restoring" : "backing up";
+    const badge=$("#rb-"+c.host); badge.textContent=L.paused?"paused":verb; badge.className="badge "+(L.paused?"b-warn":"b-ok");
     const f=$("#rf-"+c.host); f.style.width=pct+"%"; f.style.opacity=L.paused?0.5:1;
     $("#rp-"+c.host).textContent=pct+"%";
     $("#rfl-"+c.host).textContent=(p.files_done||0)+" / "+(p.total_files||0);
