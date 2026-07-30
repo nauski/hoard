@@ -76,11 +76,24 @@ func (s *Scheduler) Verify(ctx context.Context) {
 		return
 	}
 
-	// Confirm the restored file exists with the expected size.
-	got, serr := restoredSize(tmp)
-	if serr != nil || got != pick.Size {
+	// Confirm exactly the sampled file was restored, with the expected size.
+	// Counting restored files (not just picking "a" file) makes the
+	// --include exact-match guarantee load-bearing: if it ever matched more
+	// than one file, that's a real problem this check must catch rather than
+	// silently reporting a false "verified".
+	sizes, serr := restoredFileSizes(tmp)
+	if serr != nil {
+		s.failVerify(rec, client.Hostname, pick.Path, "inspect restored files: "+serr.Error())
+		return
+	}
+	if len(sizes) != 1 {
 		s.failVerify(rec, client.Hostname, pick.Path,
-			fmt.Sprintf("size mismatch: want %d got %d (%v)", pick.Size, got, serr))
+			fmt.Sprintf("expected exactly 1 restored file, got %d", len(sizes)))
+		return
+	}
+	if sizes[0] != pick.Size {
+		s.failVerify(rec, client.Hostname, pick.Path,
+			fmt.Sprintf("size mismatch: want %d got %d", pick.Size, sizes[0]))
 		return
 	}
 
@@ -95,22 +108,19 @@ func (s *Scheduler) failVerify(rec func(state.VerifyResult, string, bool), host,
 	s.alert("restore verification FAILED", host+": "+msg)
 }
 
-// restoredSize returns the size of the single largest regular file under dir
-// (the sampled file restic re-created under target, preserving its path).
-func restoredSize(dir string) (uint64, error) {
-	var size uint64
-	var found bool
-	err := filepathWalkSize(dir, &size, &found)
-	if err != nil {
-		return 0, err
+// restoredFileSizes returns the size of every regular file found recursively
+// under dir (the sampled file restic re-created under target, preserving its
+// path). Verify uses the count to assert exactly one file was restored,
+// rather than assuming it — see the comment at the call site.
+func restoredFileSizes(dir string) ([]uint64, error) {
+	var sizes []uint64
+	if err := walkFileSizes(dir, &sizes); err != nil {
+		return nil, err
 	}
-	if !found {
-		return 0, fmt.Errorf("no file restored")
-	}
-	return size, nil
+	return sizes, nil
 }
 
-func filepathWalkSize(dir string, size *uint64, found *bool) error {
+func walkFileSizes(dir string, sizes *[]uint64) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -118,7 +128,7 @@ func filepathWalkSize(dir string, size *uint64, found *bool) error {
 	for _, e := range entries {
 		full := dir + string(os.PathSeparator) + e.Name()
 		if e.IsDir() {
-			if err := filepathWalkSize(full, size, found); err != nil {
+			if err := walkFileSizes(full, sizes); err != nil {
 				return err
 			}
 			continue
@@ -127,10 +137,7 @@ func filepathWalkSize(dir string, size *uint64, found *bool) error {
 		if err != nil {
 			return err
 		}
-		if uint64(info.Size()) > *size {
-			*size = uint64(info.Size())
-		}
-		*found = true
+		*sizes = append(*sizes, uint64(info.Size()))
 	}
 	return nil
 }
