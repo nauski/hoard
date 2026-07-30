@@ -326,7 +326,7 @@ async function loadClients(){
 }
 async function selectClient(host, keepFiles){
   bClientHost=host; if(!keepFiles){ bSnap=""; $("#bFiles").innerHTML=""; }
-  if(!host){ $("#bVersions").innerHTML=""; $("#bHint").textContent="pick a client to see its backup versions"; return; }
+  if(!host){ $("#bVersions").innerHTML=""; $("#bHint").textContent="pick a client to see its backup versions"; const dO0=$("#diffOut"); if(dO0) dO0.innerHTML=""; return; }
   $("#bHint").textContent="";
   let all;
   try { const r=await fetch("/api/snapshots"); all=await r.json(); if(!r.ok) throw 0; }
@@ -345,6 +345,7 @@ async function waitIdleThenReload(keepFiles){
   await selectClient(bClientHost, keepFiles);
 }
 function renderVersions(){
+  const dO=$("#diffOut"); if(dO) dO.innerHTML="";
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no versions for this client</div>'; return; }
   $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map((s,i)=>{
     const sel = s.short_id===bSnap ? 'style="background:var(--sunken)"' : '';
@@ -368,7 +369,8 @@ async function showDiff(id, parent){
     const d=await (await fetch("/api/diff?a="+encodeURIComponent(parent)+"&b="+encodeURIComponent(id))).json();
     if(d.error){ el.innerHTML="error: "+esc(d.error); return; }
     const rows=(d.changes||[]).slice(0,200).map(c=>'<div class="mono">'+esc(c.modifier)+" "+esc(c.path)+"</div>").join("");
-    const more = (d.changes||[]).length>200 ? '<div class="sub">…'+((d.changes.length)-200)+' more</div>' : "";
+    const total = (d.added||0)+(d.removed||0)+(d.changed||0);
+    const more = total > (d.changes||[]).length ? '<div class="sub">…showing first '+((d.changes||[]).length)+' of '+total+' changes</div>' : "";
     el.innerHTML="<b>+"+d.added+" −"+d.removed+" ~"+d.changed+"</b><br>"+rows+more;
   }catch(e){ el.innerHTML="diff failed"; }
 }
@@ -464,7 +466,7 @@ setInterval(loadClients, 8000);
 // the index and cold hits e2.
 function savingsLine(o){
   if(!o || !o.logical_size) return "";
-  const saved=Math.round((1 - o.total_size/o.logical_size)*100);
+  const saved=Math.max(0, Math.round((1 - o.total_size/o.logical_size)*100));
   return hBytes(o.logical_size)+" logical → "+hBytes(o.total_size)+" stored ("+saved+"% saved)";
 }
 async function loadStats(){
