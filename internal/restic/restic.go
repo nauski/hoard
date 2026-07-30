@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,9 +51,22 @@ func (c *Client) env() []string {
 	return env
 }
 
+// globalArgs returns restic persistent flags (bandwidth caps) to prepend before
+// the subcommand. Empty when no limits are configured.
+func (c *Client) globalArgs() []string {
+	var g []string
+	if c.repo.LimitUploadKiBps > 0 {
+		g = append(g, "--limit-upload", strconv.Itoa(c.repo.LimitUploadKiBps))
+	}
+	if c.repo.LimitDownloadKiBps > 0 {
+		g = append(g, "--limit-download", strconv.Itoa(c.repo.LimitDownloadKiBps))
+	}
+	return g
+}
+
 // run executes restic with the given args and returns combined stdout.
 func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, c.bin, args...)
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
 	cmd.Env = append(cmd.Environ(), c.env()...)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
@@ -110,7 +124,7 @@ func (c *Client) CopyFrom(ctx context.Context, src config.Repo) (string, error) 
 		"copy",
 		"--from-repo", src.Repository,
 	}
-	cmd := exec.CommandContext(ctx, c.bin, args...)
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
 	env := append(cmd.Environ(), c.env()...)
 	env = append(env, "RESTIC_FROM_PASSWORD="+src.Password)
 	if src.S3AccessKeyID != "" {
@@ -181,7 +195,7 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 	}
 	args = append(args, paths...)
 
-	cmd := exec.CommandContext(ctx, c.bin, args...)
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
 	cmd.Env = append(cmd.Environ(), c.env()...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -310,7 +324,7 @@ func (c *Client) Restore(ctx context.Context, snapID, subpath, target, overwrite
 		args = append(args, "--verify")
 	}
 
-	cmd := exec.CommandContext(ctx, c.bin, args...)
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
 	cmd.Env = append(cmd.Environ(), c.env()...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -518,7 +532,7 @@ func (c *Client) ListFiles(ctx context.Context, snapID string) ([]LsEntry, error
 // w, for downloads. For a directory restic would emit a tar; we only expose it
 // for files in the UI.
 func (c *Client) Dump(ctx context.Context, snapID, filePath string, w io.Writer) error {
-	cmd := exec.CommandContext(ctx, c.bin, "dump", snapID, filePath)
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), "dump", snapID, filePath)...)
 	cmd.Env = append(cmd.Environ(), c.env()...)
 	var errb bytes.Buffer
 	cmd.Stdout = w

@@ -92,6 +92,16 @@
         <input id="sched" type="text" placeholder="21:00" />
       </div>
     </div>
+    <div class="grid2">
+      <div>
+        <label>Backup upload limit (KiB/s, 0 = unlimited)</label>
+        <input id="limUp" type="text" placeholder="0" />
+      </div>
+      <div>
+        <label>Backup download limit (KiB/s, 0 = unlimited)</label>
+        <input id="limDown" type="text" placeholder="0" />
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -304,12 +314,14 @@ async function load(){
   const c=await (await fetch("/api/config")).json();
   $("#repo").value=c.repository||""; $("#pwfile").value=c.password_file||"";
   $("#sched").value=c.schedule||""; $("#host").textContent=c.host||"—";
+  $("#limUp").value=c.limit_upload_kibps||0; $("#limDown").value=c.limit_download_kibps||0;
   $("#paths").innerHTML=""; (c.paths||[]).forEach(p=>addRow("paths",p)); if(!(c.paths||[]).length) addRow("paths","");
   $("#excludes").innerHTML=""; (c.excludes||[]).forEach(e=>addRow("excludes",e)); if(!(c.excludes||[]).length) addRow("excludes","");
 }
 async function save(){
   const body={ repository:$("#repo").value.trim(), password_file:$("#pwfile").value.trim(),
-    schedule:$("#sched").value.trim(), paths:readList("paths"), excludes:readList("excludes") };
+    schedule:$("#sched").value.trim(), paths:readList("paths"), excludes:readList("excludes"),
+    limit_upload_kibps:(parseInt($("#limUp").value,10)||0), limit_download_kibps:(parseInt($("#limDown").value,10)||0) };
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   $("#msg").textContent = r.ok ? "saved ✓" : "save failed";
   setTimeout(()=>$("#msg").textContent="",2500);

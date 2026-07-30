@@ -5,11 +5,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/nauski/hoard/internal/config"
 )
+
+// repoForTest exposes the unexported repo for tests that need to rebuild an
+// equivalent client with different config (e.g. bandwidth limits).
+func (c *Client) repoForTest() string { return c.repo.Repository }
 
 // newTestRepo inits a local restic repo in a temp dir and backs up a fixture
 // tree, returning a Client and the fixture root. Skips if restic is absent.
@@ -180,6 +185,32 @@ func TestRestoreCancel(t *testing.T) {
 	_, _, err := c.Restore(ctx, "latest", "", t.TempDir(), "always", false, RestoreHooks{})
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
+	}
+}
+
+func TestGlobalArgs(t *testing.T) {
+	c := New("restic", config.Repo{Repository: "/x", LimitUploadKiBps: 500, LimitDownloadKiBps: 300})
+	got := c.globalArgs()
+	want := []string{"--limit-upload", "500", "--limit-download", "300"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("globalArgs = %v, want %v", got, want)
+	}
+	if n := New("restic", config.Repo{Repository: "/x"}).globalArgs(); len(n) != 0 {
+		t.Fatalf("expected no flags when unset, got %v", n)
+	}
+	up := New("restic", config.Repo{Repository: "/x", LimitUploadKiBps: 42}).globalArgs()
+	if strings.Join(up, " ") != "--limit-upload 42" {
+		t.Fatalf("upload-only = %v", up)
+	}
+}
+
+func TestLimitedClientStillRuns(t *testing.T) {
+	c, _ := newTestRepo(t)
+	// Rebuild the same repo client WITH a limit and confirm restic accepts the
+	// prepended global flag (no-op on a local repo, but must not error).
+	limited := New("restic", config.Repo{Repository: c.repoForTest(), Password: "test", LimitUploadKiBps: 999999})
+	if _, err := limited.Snapshots(context.Background()); err != nil {
+		t.Fatalf("limited snapshots failed: %v", err)
 	}
 }
 

@@ -51,6 +51,10 @@ type Repo struct {
 	// S3AccessKeyID / S3SecretAccessKey authenticate to e2; empty for local repos.
 	S3AccessKeyID     string `json:"s3_access_key_id"`
 	S3SecretAccessKey string `json:"s3_secret_access_key"`
+	// LimitUploadKiBps / LimitDownloadKiBps cap restic transfer speed (KiB/s);
+	// 0 = unlimited.
+	LimitUploadKiBps   int `json:"limit_upload_kibps"`
+	LimitDownloadKiBps int `json:"limit_download_kibps"`
 }
 
 // Schedule holds cron-free "daily at HH:MM" times for each recurring job.
@@ -93,8 +97,8 @@ type Alert struct {
 // (a secret); it is persisted to the 0600 config file and shown write-only in the
 // UI. Empty Host/From/To disables email.
 type SMTP struct {
-	Host     string `json:"host"`     // e.g. smtp.gmail.com
-	Port     string `json:"port"`     // e.g. 587 (blank -> 587)
+	Host     string `json:"host"` // e.g. smtp.gmail.com
+	Port     string `json:"port"` // e.g. 587 (blank -> 587)
 	Username string `json:"username"`
 	Password string `json:"password"` // app password (secret)
 	From     string `json:"from"`

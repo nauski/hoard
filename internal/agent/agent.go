@@ -47,6 +47,10 @@ type Config struct {
 	// are delegated to (only the server can reach e2). Empty = derive from
 	// Repository (rest://host:8000/... -> http://host:8080).
 	ServerURL string `json:"server_url"`
+	// LimitUploadKiBps / LimitDownloadKiBps cap this agent's backup transfer
+	// speed (KiB/s); 0 = unlimited.
+	LimitUploadKiBps   int `json:"limit_upload_kibps"`
+	LimitDownloadKiBps int `json:"limit_download_kibps"`
 }
 
 // Agent owns config persistence, the restic client, and run state.
@@ -426,7 +430,10 @@ func (a *Agent) resticClient() (*restic.Client, error) {
 	if a.cfg.Repository == "" {
 		return nil, fmt.Errorf("no server repository configured")
 	}
-	return restic.New(a.resticBin, config.Repo{Repository: a.cfg.Repository, Password: pw}), nil
+	return restic.New(a.resticBin, config.Repo{
+		Repository: a.cfg.Repository, Password: pw,
+		LimitUploadKiBps: a.cfg.LimitUploadKiBps, LimitDownloadKiBps: a.cfg.LimitDownloadKiBps,
+	}), nil
 }
 
 // Backup runs one backup now. It is safe to call concurrently; a second call
