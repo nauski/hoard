@@ -484,6 +484,33 @@ func (c *Client) Ls(ctx context.Context, snapID, dir string) ([]LsEntry, error) 
 	return entries, nil
 }
 
+// ListFiles returns every regular file in snapshot snapID (recursive), with
+// path + size. Used by the restore-verification sampler. Uses --no-lock.
+func (c *Client) ListFiles(ctx context.Context, snapID string) ([]LsEntry, error) {
+	out, err := c.run(ctx, "ls", snapID, "--json", "--no-lock")
+	if err != nil {
+		return nil, err
+	}
+	var files []LsEntry
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
+	for sc.Scan() {
+		var n struct {
+			MessageType string    `json:"message_type"`
+			Name        string    `json:"name"`
+			Type        string    `json:"type"`
+			Path        string    `json:"path"`
+			Size        uint64    `json:"size"`
+			MTime       time.Time `json:"mtime"`
+		}
+		if json.Unmarshal(sc.Bytes(), &n) != nil || n.MessageType != "node" || n.Type != "file" {
+			continue
+		}
+		files = append(files, LsEntry{Name: n.Name, Path: n.Path, Type: n.Type, Size: n.Size, MTime: n.MTime})
+	}
+	return files, nil
+}
+
 // Dump streams the contents of a single file (filePath) from snapshot snapID to
 // w, for downloads. For a directory restic would emit a tar; we only expose it
 // for files in the UI.

@@ -144,3 +144,21 @@ func TestRestoreCancel(t *testing.T) {
 		t.Fatal("expected error on cancelled context")
 	}
 }
+
+func TestListFiles(t *testing.T) {
+	c, _ := newTestRepo(t)
+	files, err := c.ListFiles(context.Background(), "latest")
+	if err != nil {
+		t.Fatalf("list files: %v", err)
+	}
+	var names = map[string]bool{}
+	for _, f := range files {
+		if f.Type != "file" {
+			t.Fatalf("ListFiles returned non-file: %+v", f)
+		}
+		names[filepath.Base(f.Path)] = true
+	}
+	if !names["hello.txt"] || !names["nested.txt"] {
+		t.Fatalf("expected hello.txt and nested.txt, got %v", names)
+	}
+}
