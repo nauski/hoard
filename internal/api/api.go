@@ -80,23 +80,25 @@ func (s *Server) Handler() http.Handler {
 }
 
 type statusResponse struct {
-	Now      time.Time                  `json:"now"`
-	Running  string                     `json:"running"`
-	Clients  map[string]state.Client    `json:"clients"`
-	Jobs     map[string]state.JobResult `json:"jobs"`
-	ColdRepo string                     `json:"cold_repo"`
-	HotRepo  string                     `json:"hot_repo"`
+	Now        time.Time                  `json:"now"`
+	Running    string                     `json:"running"`
+	Clients    map[string]state.Client    `json:"clients"`
+	Jobs       map[string]state.JobResult `json:"jobs"`
+	ColdRepo   string                     `json:"cold_repo"`
+	HotRepo    string                     `json:"hot_repo"`
+	LastVerify *state.VerifyResult        `json:"last_verify,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	snap := s.store.Snapshot()
 	writeJSON(w, http.StatusOK, statusResponse{
-		Now:      time.Now(),
-		Running:  s.sched.Running(),
-		Clients:  snap.Clients,
-		Jobs:     snap.LastByJob,
-		ColdRepo: redact(s.cfg.Load().Cold.Repository),
-		HotRepo:  s.cfg.Load().Hot.Repository,
+		Now:        time.Now(),
+		Running:    s.sched.Running(),
+		Clients:    snap.Clients,
+		Jobs:       snap.LastByJob,
+		ColdRepo:   redact(s.cfg.Load().Cold.Repository),
+		HotRepo:    s.cfg.Load().Hot.Repository,
+		LastVerify: snap.LastVerify,
 	})
 }
 

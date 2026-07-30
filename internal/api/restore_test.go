@@ -101,3 +101,35 @@ func TestHandleRestore_RejectsConcurrent(t *testing.T) {
 		t.Fatal("rejected request cleared restoreCancel; the in-flight restore's cancel was lost")
 	}
 }
+
+func TestStatusIncludesLastVerify(t *testing.T) {
+	srv, _ := newRestoreServer(t)
+	srv.store.SetVerify(state.VerifyResult{Time: time.Now(), OK: true, Client: "vhost", File: "/a.txt", Bytes: 5})
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	srv.handleStatus(w, req)
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["last_verify"] == nil {
+		t.Fatalf("status missing last_verify: %s", w.Body.String())
+	}
+}
+
+func TestConfigRoundTripsVerify(t *testing.T) {
+	srv, _ := newRestoreServer(t)
+	body := `{"schedule":{"mirror":"","check":"","check_weekday":null,"stale_after":"26h","verify":"03:30"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+	srv.handleSetConfig(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set config: %d %s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	w = httptest.NewRecorder()
+	srv.handleGetConfig(w, req)
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"verify":"03:30"`)) {
+		t.Fatalf("verify not persisted in config: %s", w.Body.String())
+	}
+}
