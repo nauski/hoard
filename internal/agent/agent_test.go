@@ -94,3 +94,15 @@ func TestMakeDir(t *testing.T) {
 		t.Fatal("traversal name created a dir outside parent")
 	}
 }
+
+func TestAgentConfigRoundTripsLimits(t *testing.T) {
+	a := &Agent{cfgPath: t.TempDir() + "/c.json", log: slog.New(slog.NewTextHandler(os.Stderr, nil)), resticBin: "restic",
+		cfg: Config{Host: "h"}}
+	if err := a.SetConfig(Config{Repository: "rest:http://x", Host: "h", LimitUploadKiBps: 1200, LimitDownloadKiBps: 600}); err != nil {
+		t.Fatal(err)
+	}
+	c := a.GetConfig()
+	if c.LimitUploadKiBps != 1200 || c.LimitDownloadKiBps != 600 {
+		t.Fatalf("limits not round-tripped: %+v", c)
+	}
+}
