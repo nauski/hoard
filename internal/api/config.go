@@ -157,6 +157,24 @@ func (s *Server) handleTestCold(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleRetentionPreview reports which cold-repo snapshots the POSTed retention
+// policy would forget — a read-only dry-run so the user can review before saving.
+func (s *Server) handleRetentionPreview(w http.ResponseWriter, r *http.Request) {
+	var ret config.Retention
+	if err := json.NewDecoder(r.Body).Decode(&ret); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	rm, err := s.cold().ForgetDryRun(ctx, ret)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(rm), "snapshots": rm})
+}
+
 // handleInitCold initializes the cold repo if it doesn't exist yet — restic
 // creates the encrypted store in the (empty) bucket and seals it with the
 // configured repo password. Safe to run against an already-initialized repo:

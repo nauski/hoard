@@ -74,8 +74,8 @@
   <h1>🗄️ hoard</h1>
   <span id="running" class="badge b-idle">idle</span>
   <div class="repo">
-    <div>hot: <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b></div>
-    <div>cold: <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b></div>
+    <div>hot: <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b> <span id="hotSaved" class="sub"></span></div>
+    <div>cold: <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b> <span id="coldSaved" class="sub"></span></div>
     <div class="sub">Restore check: <span id="verifyBadge">—</span></div>
   </div>
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
@@ -124,6 +124,8 @@
       <div><label class="sub">monthly</label><input id="cfgKMonthly" type="text"></div>
       <div><label class="sub">yearly</label><input id="cfgKYearly" type="text"></div>
     </div>
+    <div class="bar" style="margin-top:8px"><button class="secondary" onclick="previewRetention()">Preview</button></div>
+    <div class="sub" id="retMsg" style="margin-top:6px"></div>
     <div class="sub" style="margin:12px 0 8px">Alerts</div>
     <div class="setgrid">
       <div style="grid-column:1/-2"><label class="sub">Webhook URL (ntfy / Discord-compatible)</label><input id="cfgWebhook" type="text" placeholder="https://ntfy.sh/your-topic"></div>
@@ -176,6 +178,7 @@
       <span class="sub" id="bHint">pick a client to see its backup versions</span>
     </div>
     <div id="bVersions" style="margin-top:14px"></div>
+    <div id="diffOut" class="sub" style="margin-top:8px"></div>
     <div id="bFiles" style="margin-top:14px"></div>
   </div>
 
@@ -267,7 +270,7 @@ async function refresh(){
     const keys = Object.keys(clients).sort();
     $("#clients").innerHTML = keys.length ? keys.map(k=>{
       const c = clients[k];
-      const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">fresh</span>';
+      const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>';
       const o = (st.outcomes||{})[c.hostname];
       let runCell = '<span class="sub">—</span>';
       if(o){
@@ -323,7 +326,7 @@ async function loadClients(){
 }
 async function selectClient(host, keepFiles){
   bClientHost=host; if(!keepFiles){ bSnap=""; $("#bFiles").innerHTML=""; }
-  if(!host){ $("#bVersions").innerHTML=""; $("#bHint").textContent="pick a client to see its backup versions"; return; }
+  if(!host){ $("#bVersions").innerHTML=""; $("#bHint").textContent="pick a client to see its backup versions"; const dO0=$("#diffOut"); if(dO0) dO0.innerHTML=""; return; }
   $("#bHint").textContent="";
   let all;
   try { const r=await fetch("/api/snapshots"); all=await r.json(); if(!r.ok) throw 0; }
@@ -342,18 +345,34 @@ async function waitIdleThenReload(keepFiles){
   await selectClient(bClientHost, keepFiles);
 }
 function renderVersions(){
+  const dO=$("#diffOut"); if(dO) dO.innerHTML="";
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no versions for this client</div>'; return; }
-  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
+  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map((s,i)=>{
     const sel = s.short_id===bSnap ? 'style="background:var(--sunken)"' : '';
     const sz = s.summary ? hBytes(s.summary.total_bytes_processed) : "—";
     const added = s.summary && s.summary.data_added ? " <span class='sub'>(+"+hBytes(s.summary.data_added)+" new)</span>" : "";
+    const parent = bSnaps[i+1];
+    const diffBtn = parent ? `<button class="mini" onclick="showDiff('${s.short_id}','${parent.short_id}')">Changes</button>` : "";
     return `<div class="vrow" ${sel}>
       <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
       <button class="mini" onclick="startRestore('${s.short_id}')">Restore…</button>
+      ${diffBtn}
       <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
     </div>`;
   }).join("");
+}
+async function showDiff(id, parent){
+  const el=$("#diffOut"); if(!el) return;
+  el.innerHTML="diffing…";
+  try{
+    const d=await (await fetch("/api/diff?a="+encodeURIComponent(parent)+"&b="+encodeURIComponent(id))).json();
+    if(d.error){ el.innerHTML="error: "+esc(d.error); return; }
+    const rows=(d.changes||[]).slice(0,200).map(c=>'<div class="mono">'+esc(c.modifier)+" "+esc(c.path)+"</div>").join("");
+    const total = (d.added||0)+(d.removed||0)+(d.changed||0);
+    const more = total > (d.changes||[]).length ? '<div class="sub">…showing first '+((d.changes||[]).length)+' of '+total+' changes</div>' : "";
+    el.innerHTML="<b>+"+d.added+" −"+d.removed+" ~"+d.changed+"</b><br>"+rows+more;
+  }catch(e){ el.innerHTML="diff failed"; }
 }
 let bEntries=[];
 async function browseVersion(id){ bSnap=id; bDir="/"; renderVersions(); await browseDir("/"); }
@@ -445,11 +464,16 @@ setInterval(loadClients, 8000);
 
 // Repository storage totals (deduplicated). Fetched infrequently — stats reads
 // the index and cold hits e2.
+function savingsLine(o){
+  if(!o || !o.logical_size) return "";
+  const saved=Math.max(0, Math.round((1 - o.total_size/o.logical_size)*100));
+  return hBytes(o.logical_size)+" logical → "+hBytes(o.total_size)+" stored ("+saved+"% saved)";
+}
 async function loadStats(){
   try{
     const st=await (await fetch("/api/stats")).json();
-    if(st.hot) $("#hotSize").textContent="· "+hBytes(st.hot.total_size);
-    if(st.cold) $("#coldSize").textContent="· "+hBytes(st.cold.total_size);
+    if(st.hot){ $("#hotSize").textContent="· "+hBytes(st.hot.total_size); $("#hotSaved").textContent=savingsLine(st.hot); }
+    if(st.cold){ $("#coldSize").textContent="· "+hBytes(st.cold.total_size); $("#coldSaved").textContent=savingsLine(st.cold); }
   }catch(e){}
 }
 loadStats();
@@ -519,6 +543,22 @@ async function saveConfig(){
   if(r.ok){ $("#cfgMsg").textContent="saved ✓ (applies immediately)"; loadConfig(); return true; }
   $("#cfgMsg").textContent="error: "+(j.error||r.status);
   return false;
+}
+// Read-only dry-run against the cold repo's actual snapshots — lets you see the
+// blast radius of a retention change before saving it.
+async function previewRetention(){
+  const num=id=>{const n=parseInt($("#"+id).value,10);return isNaN(n)?0:n;};
+  const body={keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")};
+  $("#retMsg").textContent="checking…";
+  try{
+    const r=await fetch("/api/config/retention-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(j.error){ $("#retMsg").textContent="error: "+j.error; return; }
+    if(!j.count){ $("#retMsg").textContent="This policy would forget 0 snapshots."; return; }
+    const snaps=j.snapshots||[];
+    const list=snaps.slice(0,20).map(s=>esc(s.short_id)+" · "+esc(s.hostname||"")+" · "+new Date(s.time).toLocaleString()).join("<br>");
+    $("#retMsg").innerHTML="<b>Would forget "+j.count+" snapshot"+(j.count>1?"s":"")+":</b><br>"+list+(j.count>20?"<br>…":"");
+  }catch(e){ $("#retMsg").textContent="preview failed"; }
 }
 // Test/Initialize always persist the current form FIRST, so they act on exactly
 // what's typed in the fields — no separate "remember to Save" step, no acting on

@@ -56,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/config", s.handleSetConfig)
 	mux.HandleFunc("POST /api/config/test-cold", s.handleTestCold)
 	mux.HandleFunc("POST /api/config/init-cold", s.handleInitCold)
+	mux.HandleFunc("POST /api/config/retention-preview", s.handleRetentionPreview)
 	mux.HandleFunc("POST /api/config/test-email", s.handleTestEmail)
 	mux.HandleFunc("POST /api/config/ack-kit", s.handleAckKit)
 	mux.HandleFunc("GET /api/recovery-kit", s.handleRecoveryKit)
@@ -66,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	// Backup browser (reads the fast hot repo; deletes hit hot + cold).
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("GET /api/ls", s.handleLs)
+	mux.HandleFunc("GET /api/diff", s.handleDiff)
 	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("POST /api/purge", s.handlePurge)
 	mux.HandleFunc("POST /api/delete-version", s.handleDeleteVersion)
@@ -180,18 +182,24 @@ func (s *Server) postWebhook(ctx context.Context, url, title, body string) {
 }
 
 // handleStats returns repository storage totals (deduplicated raw-data size)
-// for the hot and cold repos. Somewhat expensive (reads the index), so the UI
-// calls it infrequently.
+// for the hot and cold repos, along with logical (restore-size) for dedup ratio.
+// Somewhat expensive (reads the index), so the UI calls it infrequently.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	out := map[string]any{}
-	if st, err := s.hot().Stats(ctx); err == nil {
-		out["hot"] = st
+	add := func(key string, c *restic.Client) {
+		st, err := c.StatsMode(ctx, "raw-data")
+		if err != nil {
+			return
+		}
+		if lg, err := c.StatsMode(ctx, "restore-size"); err == nil {
+			st.LogicalSize = lg.TotalSize
+		}
+		out[key] = st
 	}
-	if st, err := s.cold().Stats(ctx); err == nil {
-		out["cold"] = st
-	}
+	add("hot", s.hot())
+	add("cold", s.cold())
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -210,6 +218,24 @@ func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// handleDiff compares two snapshots (hot repo) and returns a capped list of
+// changed paths plus summary statistics. Read-only.
+func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	a, b := r.URL.Query().Get("a"), r.URL.Query().Get("b")
+	if a == "" || b == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing a or b snapshot id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	d, err := s.hot().Diff(ctx, a, b)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }
 
 // handleDownload streams a single file from a snapshot (hot repo) as a download.

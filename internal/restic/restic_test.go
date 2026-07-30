@@ -1,6 +1,7 @@
 package restic
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -229,5 +230,104 @@ func TestListFiles(t *testing.T) {
 	}
 	if !names["hello.txt"] || !names["nested.txt"] {
 		t.Fatalf("expected hello.txt and nested.txt, got %v", names)
+	}
+}
+
+func TestForgetDryRun(t *testing.T) {
+	c, fixtures := newTestRepo(t)
+	ctx := context.Background()
+	// A second snapshot so keep_last:1 would forget the first.
+	if _, _, err := c.Backup(ctx, []string{fixtures}, nil, "testhost", nil, BackupHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	rm, err := c.ForgetDryRun(ctx, config.Retention{Last: 1})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if len(rm) != 1 {
+		t.Fatalf("expected 1 snapshot to be forgotten, got %d", len(rm))
+	}
+	// Dry-run must NOT have deleted anything.
+	all, _ := c.Snapshots(ctx)
+	if len(all) != 2 {
+		t.Fatalf("dry-run deleted snapshots! now have %d", len(all))
+	}
+}
+
+func TestStatsModes(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not on PATH")
+	}
+
+	// Build a repo with a large, highly-compressible fixture to robustly test both modes.
+	// 4 MiB of zeros will compress to a few KB, so restore-size (logical) >> raw-data (stored).
+	repoDir := t.TempDir()
+	fixtures := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fixtures, "big.dat"), bytes.Repeat([]byte{0}, 4<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New("restic", config.Repo{Repository: repoDir, Password: "test"})
+	ctx := context.Background()
+	if err := c.EnsureInit(ctx); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, _, err := c.Backup(ctx, []string{fixtures}, nil, "testhost", nil, BackupHooks{}); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+
+	// Get stats in both modes and verify restore-size exceeds raw-data due to decompression.
+	stored, err := c.StatsMode(ctx, "raw-data")
+	if err != nil {
+		t.Fatalf("raw-data: %v", err)
+	}
+	logical, err := c.StatsMode(ctx, "restore-size")
+	if err != nil {
+		t.Fatalf("restore-size: %v", err)
+	}
+
+	// Logical (restore-size) is >= deduplicated stored size.
+	// With 4 MiB of zeros, logical ~4 MiB while stored << 1 MiB after compression.
+	if logical.TotalSize < stored.TotalSize {
+		t.Fatalf("logical %d < stored %d; modes may not be working correctly", logical.TotalSize, stored.TotalSize)
+	}
+}
+
+func TestDiff(t *testing.T) {
+	c, fixtures := newTestRepo(t)
+	ctx := context.Background()
+	first, _ := c.Snapshots(ctx)
+	// add a file and back up again
+	if err := os.WriteFile(filepath.Join(fixtures, "added.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Backup(ctx, []string{fixtures}, nil, "testhost", nil, BackupHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := c.Snapshots(ctx)
+	// newest first? use the two distinct ids
+	var a, b string
+	a = first[0].ShortID
+	for _, s := range all {
+		if s.ShortID != a {
+			b = s.ShortID
+			break
+		}
+	}
+	d, err := c.Diff(ctx, a, b)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if d.Added < 1 {
+		t.Fatalf("expected >=1 added, got %+v", d)
+	}
+	var sawAdded bool
+	for _, ch := range d.Changes {
+		if strings.Contains(ch.Path, "added.txt") && ch.Modifier == "+" {
+			sawAdded = true
+		}
+	}
+	if !sawAdded {
+		t.Fatalf("added.txt not in changes: %+v", d.Changes)
 	}
 }

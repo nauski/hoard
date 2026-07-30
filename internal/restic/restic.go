@@ -409,26 +409,54 @@ func (c *Client) Check(ctx context.Context, readDataSubset string) (string, erro
 	return string(out), err
 }
 
+// retentionArgs builds the --keep-* flags for a retention policy.
+func retentionArgs(r config.Retention) []string {
+	var a []string
+	if r.Last > 0 {
+		a = append(a, "--keep-last", itoa(r.Last))
+	}
+	if r.Daily > 0 {
+		a = append(a, "--keep-daily", itoa(r.Daily))
+	}
+	if r.Weekly > 0 {
+		a = append(a, "--keep-weekly", itoa(r.Weekly))
+	}
+	if r.Monthly > 0 {
+		a = append(a, "--keep-monthly", itoa(r.Monthly))
+	}
+	if r.Yearly > 0 {
+		a = append(a, "--keep-yearly", itoa(r.Yearly))
+	}
+	return a
+}
+
 // ForgetPrune applies a retention policy and prunes unreferenced data.
 func (c *Client) ForgetPrune(ctx context.Context, r config.Retention) (string, error) {
 	args := []string{"forget", "--prune"}
-	if r.Last > 0 {
-		args = append(args, "--keep-last", itoa(r.Last))
-	}
-	if r.Daily > 0 {
-		args = append(args, "--keep-daily", itoa(r.Daily))
-	}
-	if r.Weekly > 0 {
-		args = append(args, "--keep-weekly", itoa(r.Weekly))
-	}
-	if r.Monthly > 0 {
-		args = append(args, "--keep-monthly", itoa(r.Monthly))
-	}
-	if r.Yearly > 0 {
-		args = append(args, "--keep-yearly", itoa(r.Yearly))
-	}
+	args = append(args, retentionArgs(r)...)
 	out, err := c.run(ctx, args...)
 	return string(out), err
+}
+
+// ForgetDryRun reports which snapshots the retention policy WOULD forget,
+// without touching the repo (--dry-run). Read-only.
+func (c *Client) ForgetDryRun(ctx context.Context, r config.Retention) ([]Snapshot, error) {
+	args := append([]string{"forget", "--dry-run", "--json"}, retentionArgs(r)...)
+	out, err := c.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	var groups []struct {
+		Remove []Snapshot `json:"remove"`
+	}
+	if err := json.Unmarshal(out, &groups); err != nil {
+		return nil, fmt.Errorf("parse forget: %w", err)
+	}
+	var rm []Snapshot
+	for _, g := range groups {
+		rm = append(rm, g.Remove...)
+	}
+	return rm, nil
 }
 
 // Stats returns the repo's restore-size stats as raw JSON for the dashboard.
@@ -436,11 +464,13 @@ type Stats struct {
 	TotalSize      uint64 `json:"total_size"`
 	TotalFileCount uint64 `json:"total_file_count"`
 	SnapshotsCount int    `json:"snapshots_count"`
+	LogicalSize    uint64 `json:"logical_size,omitempty"`
 }
 
-// Stats returns repository size stats (restore-size mode).
-func (c *Client) Stats(ctx context.Context) (*Stats, error) {
-	out, err := c.run(ctx, "stats", "--json", "--mode", "raw-data")
+// StatsMode returns repo size stats for a restic --mode (e.g. "raw-data" for the
+// deduplicated stored size, "restore-size" for the logical size).
+func (c *Client) StatsMode(ctx context.Context, mode string) (*Stats, error) {
+	out, err := c.run(ctx, "stats", "--json", "--mode", mode)
 	if err != nil {
 		return nil, err
 	}
@@ -449,6 +479,11 @@ func (c *Client) Stats(ctx context.Context) (*Stats, error) {
 		return nil, fmt.Errorf("parse stats: %w", err)
 	}
 	return &s, nil
+}
+
+// Stats returns repository size stats (raw-data mode, deduplicated stored size).
+func (c *Client) Stats(ctx context.Context) (*Stats, error) {
+	return c.StatsMode(ctx, "raw-data")
 }
 
 // LsEntry is one file or directory inside a snapshot.
