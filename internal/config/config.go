@@ -53,6 +53,8 @@ type Schedule struct {
 	Mirror string `json:"mirror"`
 	// Check runs `restic check` on the cold repo (e.g. "04:00", typically weekly-ish).
 	Check string `json:"check"`
+	// Verify runs the restore fire-drill at this "HH:MM" (empty = disabled).
+	Verify string `json:"verify"`
 	// CheckWeekday, if set (0=Sun..6=Sat), restricts Check to that weekday.
 	CheckWeekday *int `json:"check_weekday"`
 	// StaleAfter marks a client repo stale if no new snapshot within this window.

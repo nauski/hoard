@@ -20,6 +20,16 @@ type JobResult struct {
 	Output    string    `json:"output,omitempty"`
 }
 
+// VerifyResult records the most recent restore fire-drill.
+type VerifyResult struct {
+	Time   time.Time `json:"time"`
+	OK     bool      `json:"ok"`
+	Client string    `json:"client"`
+	File   string    `json:"file"`
+	Bytes  uint64    `json:"bytes"`
+	Err    string    `json:"err,omitempty"`
+}
+
 // Client is the freshness view of one host that pushes to the hot repo.
 type Client struct {
 	Hostname     string    `json:"hostname"`
@@ -37,7 +47,8 @@ type Store struct {
 	History []JobResult       `json:"history"`
 	Clients map[string]Client `json:"clients"`
 	// LastByJob is the most recent result per job name, for quick dashboard reads.
-	LastByJob map[string]JobResult `json:"last_by_job"`
+	LastByJob  map[string]JobResult `json:"last_by_job"`
+	LastVerify *VerifyResult        `json:"last_verify,omitempty"`
 }
 
 // Load reads the store from path, or returns an empty one if it doesn't exist.
@@ -84,11 +95,20 @@ func (s *Store) SetClients(clients map[string]Client) {
 	s.save()
 }
 
+// SetVerify records the latest restore-verification result and persists.
+func (s *Store) SetVerify(r VerifyResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LastVerify = &r
+	s.save()
+}
+
 // View is a lock-free, read-only copy of the store for handlers to consume.
 type View struct {
-	History   []JobResult          `json:"history"`
-	Clients   map[string]Client    `json:"clients"`
-	LastByJob map[string]JobResult `json:"last_by_job"`
+	History    []JobResult          `json:"history"`
+	Clients    map[string]Client    `json:"clients"`
+	LastByJob  map[string]JobResult `json:"last_by_job"`
+	LastVerify *VerifyResult        `json:"last_verify,omitempty"`
 }
 
 // Snapshot returns a deep-ish copy safe for read-only handlers.
@@ -105,6 +125,10 @@ func (s *Store) Snapshot() View {
 	}
 	for k, v := range s.LastByJob {
 		cp.LastByJob[k] = v
+	}
+	if s.LastVerify != nil {
+		v := *s.LastVerify
+		cp.LastVerify = &v
 	}
 	return cp
 }
