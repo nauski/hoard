@@ -381,9 +381,12 @@ async function refresh(){
     $("#now").disabled=running;
     renderLive(live);
     const lr=st.last_run;
+    const failed=!!(lr && lr.ok===false && !running && lr.message!=='cancelled');
+    $("#now").textContent = failed ? "Retry backup" : "Back up now";
     if(lr && lr.started_at && !String(lr.started_at).startsWith("0001")){
       const b=lr.ok?'<span class="badge b-ok">ok</span>':'<span class="badge b-bad">failed</span>';
-      $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='mono'>"+(lr.message||"")+"</span>";
+      const msgClass = failed ? "danger-text" : "mono";
+      $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='"+msgClass+"'>"+esc(lr.message||"")+"</span>";
     }
   }catch(e){}
 }

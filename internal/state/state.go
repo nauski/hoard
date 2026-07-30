@@ -20,6 +20,16 @@ type JobResult struct {
 	Output    string    `json:"output,omitempty"`
 }
 
+// Outcome is the result of a client's most recent backup run (report-derived).
+// Kept separate from Client (which is rebuilt from snapshots each tick) so the
+// freshness refresh can't clobber it. ConsecutiveFailures is maintained server-side.
+type Outcome struct {
+	OK                  bool      `json:"ok"`
+	Message             string    `json:"message"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	At                  time.Time `json:"at"`
+}
+
 // VerifyResult records the most recent restore fire-drill.
 type VerifyResult struct {
 	Time   time.Time `json:"time"`
@@ -47,13 +57,14 @@ type Store struct {
 	History []JobResult       `json:"history"`
 	Clients map[string]Client `json:"clients"`
 	// LastByJob is the most recent result per job name, for quick dashboard reads.
-	LastByJob  map[string]JobResult `json:"last_by_job"`
-	LastVerify *VerifyResult        `json:"last_verify,omitempty"`
+	LastByJob      map[string]JobResult `json:"last_by_job"`
+	ClientOutcomes map[string]Outcome   `json:"client_outcomes"`
+	LastVerify     *VerifyResult        `json:"last_verify,omitempty"`
 }
 
 // Load reads the store from path, or returns an empty one if it doesn't exist.
 func Load(path string) (*Store, error) {
-	s := &Store{path: path, Clients: map[string]Client{}, LastByJob: map[string]JobResult{}}
+	s := &Store{path: path, Clients: map[string]Client{}, LastByJob: map[string]JobResult{}, ClientOutcomes: map[string]Outcome{}}
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return s, nil
@@ -69,6 +80,9 @@ func Load(path string) (*Store, error) {
 	}
 	if s.LastByJob == nil {
 		s.LastByJob = map[string]JobResult{}
+	}
+	if s.ClientOutcomes == nil {
+		s.ClientOutcomes = map[string]Outcome{}
 	}
 	s.path = path
 	return s, nil
@@ -95,6 +109,21 @@ func (s *Store) SetClients(clients map[string]Client) {
 	s.save()
 }
 
+// SetOutcome records a client's latest run outcome and persists.
+func (s *Store) SetOutcome(host string, o Outcome) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ClientOutcomes[host] = o
+	s.save()
+}
+
+// OutcomeFor returns the stored outcome for host (zero value if none).
+func (s *Store) OutcomeFor(host string) Outcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ClientOutcomes[host]
+}
+
 // SetVerify records the latest restore-verification result and persists.
 func (s *Store) SetVerify(r VerifyResult) {
 	s.mu.Lock()
@@ -105,10 +134,11 @@ func (s *Store) SetVerify(r VerifyResult) {
 
 // View is a lock-free, read-only copy of the store for handlers to consume.
 type View struct {
-	History    []JobResult          `json:"history"`
-	Clients    map[string]Client    `json:"clients"`
-	LastByJob  map[string]JobResult `json:"last_by_job"`
-	LastVerify *VerifyResult        `json:"last_verify,omitempty"`
+	History        []JobResult          `json:"history"`
+	Clients        map[string]Client    `json:"clients"`
+	LastByJob      map[string]JobResult `json:"last_by_job"`
+	ClientOutcomes map[string]Outcome   `json:"client_outcomes"`
+	LastVerify     *VerifyResult        `json:"last_verify,omitempty"`
 }
 
 // Snapshot returns a deep-ish copy safe for read-only handlers.
@@ -116,15 +146,19 @@ func (s *Store) Snapshot() View {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := View{
-		History:   append([]JobResult(nil), s.History...),
-		Clients:   make(map[string]Client, len(s.Clients)),
-		LastByJob: make(map[string]JobResult, len(s.LastByJob)),
+		History:        append([]JobResult(nil), s.History...),
+		Clients:        make(map[string]Client, len(s.Clients)),
+		LastByJob:      make(map[string]JobResult, len(s.LastByJob)),
+		ClientOutcomes: make(map[string]Outcome, len(s.ClientOutcomes)),
 	}
 	for k, v := range s.Clients {
 		cp.Clients[k] = v
 	}
 	for k, v := range s.LastByJob {
 		cp.LastByJob[k] = v
+	}
+	for k, v := range s.ClientOutcomes {
+		cp.ClientOutcomes[k] = v
 	}
 	if s.LastVerify != nil {
 		v := *s.LastVerify

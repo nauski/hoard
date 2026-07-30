@@ -283,11 +283,11 @@ func (a *Agent) reportLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			a.report(client, base, &Live{Running: false}) // final: mark idle
+			a.report(client, base, &Live{Running: false}, a.backupOutcome()) // final: mark idle + outcome
 			return
 		case <-t.C:
 			live := a.Live()
-			switch a.report(client, base, &live) {
+			switch a.report(client, base, &live, nil) {
 			case "pause":
 				_ = a.Pause()
 			case "resume":
@@ -299,9 +299,36 @@ func (a *Agent) reportLoop(ctx context.Context) {
 	}
 }
 
-// report POSTs one live snapshot to the server and returns any queued command.
-func (a *Agent) report(client *http.Client, base string, live *Live) string {
-	body, _ := json.Marshal(map[string]any{"host": a.Host(), "live": live})
+// reportOutcome is the completed-backup result the agent appends to its final
+// report so the server can track failures.
+type reportOutcome struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// backupOutcome returns the just-finished run's outcome IF it was a backup
+// that ran to completion (not a restore, not a user cancel); otherwise nil.
+func (a *Agent) backupOutcome() *reportOutcome {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	rr := a.lastRun
+	if rr.Kind != "backup" {
+		return nil
+	}
+	if !rr.OK && rr.Message == "cancelled" {
+		return nil
+	}
+	return &reportOutcome{OK: rr.OK, Message: rr.Message}
+}
+
+// report POSTs one live snapshot (and, on the final report, the completed
+// backup's outcome) to the server and returns any queued command.
+func (a *Agent) report(client *http.Client, base string, live *Live, outcome *reportOutcome) string {
+	payload := map[string]any{"host": a.Host(), "live": live}
+	if outcome != nil {
+		payload["last_result"] = outcome
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, base+"/api/report", bytes.NewReader(body))
 	if err != nil {
 		return ""
@@ -435,7 +462,9 @@ func (a *Agent) Backup(ctx context.Context) error {
 	}()
 
 	start := time.Now()
-	rr := RunResult{StartedAt: start}
+	rr := RunResult{StartedAt: start, Kind: "backup"}
+
+	go a.reportLoop(runCtx) // stream live state to the server (and pick up commands); also covers pre-flight failures below
 
 	cl, err := a.resticClient()
 	if err != nil {
@@ -464,7 +493,6 @@ func (a *Agent) Backup(ctx context.Context) error {
 			a.mu.Unlock()
 		},
 	}
-	go a.reportLoop(runCtx) // stream live state to the server (and pick up commands)
 	summary, out, err := cl.Backup(runCtx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, hooks)
 	rr.EndedAt = time.Now()
 	rr.Output = out

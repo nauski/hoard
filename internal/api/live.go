@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/nauski/hoard/internal/state"
 )
 
 // liveStore holds the most recent live-backup report from each client, plus a
@@ -70,9 +74,15 @@ func (s *liveStore) running(now time.Time, fresh time.Duration) []liveClient {
 
 // --- handlers ---
 
+type reportOutcome struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
 type reportRequest struct {
-	Host string          `json:"host"`
-	Live json.RawMessage `json:"live"`
+	Host       string          `json:"host"`
+	Live       json.RawMessage `json:"live"`
+	LastResult *reportOutcome  `json:"last_result"`
 }
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +92,34 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmd := s.live.report(req.Host, req.Live, time.Now())
+	if req.LastResult != nil {
+		s.recordOutcome(req.Host, req.LastResult.OK, req.LastResult.Message)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"command": cmd})
+}
+
+// recordOutcome maintains the per-client consecutive-failure count and fires the
+// failure alert once when it first crosses the configured threshold.
+func (s *Server) recordOutcome(host string, ok bool, message string) {
+	prev := s.store.OutcomeFor(host)
+	count := prev.ConsecutiveFailures
+	if ok {
+		count = 0
+	} else {
+		count++
+	}
+	s.store.SetOutcome(host, state.Outcome{OK: ok, Message: message, ConsecutiveFailures: count, At: time.Now()})
+
+	al := s.cfg.Load().Alert
+	threshold := al.FailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if !ok && al.OnFailure && count >= threshold && prev.ConsecutiveFailures < threshold {
+		title := "client backup failing"
+		body := fmt.Sprintf("%s: %s (failed %d times)", host, message, count)
+		go s.Notify(context.Background(), title, body)
+	}
 }
 
 // handleRunning lists clients currently reporting a live backup.

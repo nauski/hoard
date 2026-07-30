@@ -89,6 +89,7 @@ type statusResponse struct {
 	ColdRepo   string                     `json:"cold_repo"`
 	HotRepo    string                     `json:"hot_repo"`
 	LastVerify *state.VerifyResult        `json:"last_verify,omitempty"`
+	Outcomes   map[string]state.Outcome   `json:"outcomes"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +102,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ColdRepo:   redact(s.cfg.Load().Cold.Repository),
 		HotRepo:    s.cfg.Load().Hot.Repository,
 		LastVerify: snap.LastVerify,
+		Outcomes:   snap.ClientOutcomes,
 	})
 }
 
