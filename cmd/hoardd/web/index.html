@@ -178,6 +178,7 @@
       <span class="sub" id="bHint">pick a client to see its backup versions</span>
     </div>
     <div id="bVersions" style="margin-top:14px"></div>
+    <div id="diffOut" class="sub" style="margin-top:8px"></div>
     <div id="bFiles" style="margin-top:14px"></div>
   </div>
 
@@ -269,7 +270,7 @@ async function refresh(){
     const keys = Object.keys(clients).sort();
     $("#clients").innerHTML = keys.length ? keys.map(k=>{
       const c = clients[k];
-      const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">fresh</span>';
+      const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>';
       const o = (st.outcomes||{})[c.hostname];
       let runCell = '<span class="sub">—</span>';
       if(o){
@@ -345,17 +346,31 @@ async function waitIdleThenReload(keepFiles){
 }
 function renderVersions(){
   if(!bSnaps.length){ $("#bVersions").innerHTML='<div class="sub">no versions for this client</div>'; return; }
-  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map(s=>{
+  $("#bVersions").innerHTML='<div class="sub" style="margin-bottom:6px">'+bSnaps.length+' version(s):</div>'+bSnaps.map((s,i)=>{
     const sel = s.short_id===bSnap ? 'style="background:var(--sunken)"' : '';
     const sz = s.summary ? hBytes(s.summary.total_bytes_processed) : "—";
     const added = s.summary && s.summary.data_added ? " <span class='sub'>(+"+hBytes(s.summary.data_added)+" new)</span>" : "";
+    const parent = bSnaps[i+1];
+    const diffBtn = parent ? `<button class="mini" onclick="showDiff('${s.short_id}','${parent.short_id}')">Changes</button>` : "";
     return `<div class="vrow" ${sel}>
       <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
       <button class="mini" onclick="startRestore('${s.short_id}')">Restore…</button>
+      ${diffBtn}
       <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
     </div>`;
   }).join("");
+}
+async function showDiff(id, parent){
+  const el=$("#diffOut"); if(!el) return;
+  el.innerHTML="diffing…";
+  try{
+    const d=await (await fetch("/api/diff?a="+encodeURIComponent(parent)+"&b="+encodeURIComponent(id))).json();
+    if(d.error){ el.innerHTML="error: "+esc(d.error); return; }
+    const rows=(d.changes||[]).slice(0,200).map(c=>'<div class="mono">'+esc(c.modifier)+" "+esc(c.path)+"</div>").join("");
+    const more = (d.changes||[]).length>200 ? '<div class="sub">…'+((d.changes.length)-200)+' more</div>' : "";
+    el.innerHTML="<b>+"+d.added+" −"+d.removed+" ~"+d.changed+"</b><br>"+rows+more;
+  }catch(e){ el.innerHTML="diff failed"; }
 }
 let bEntries=[];
 async function browseVersion(id){ bSnap=id; bDir="/"; renderVersions(); await browseDir("/"); }
