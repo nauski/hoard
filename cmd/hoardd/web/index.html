@@ -77,6 +77,7 @@
   .help:hover,.help:focus{color:var(--accent);border-color:var(--accent);outline:none}
   .help::after{content:attr(data-tip);position:absolute;bottom:150%;left:50%;transform:translateX(-50%);background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;font-weight:400;line-height:1.45;width:max-content;max-width:260px;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.35);opacity:0;visibility:hidden;transition:opacity .12s;z-index:60;pointer-events:none}
   .help:hover::after,.help:focus::after{opacity:1;visibility:visible}
+  .help.below::after{ top:150%; bottom:auto; }
 </style>
 </head>
 <body>
@@ -84,9 +85,9 @@
   <h1>🗄️ hoard</h1>
   <span id="running" class="badge b-idle">idle</span>
   <div class="repo">
-    <div>hot: <span class="help" tabindex="0" data-tip="Local staging repo on the NAS. Clients push backups here first over your LAN (fast). Mirrored offsite on a schedule.">ⓘ</span> <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b> <span id="hotSaved" class="sub"></span></div>
-    <div>cold: <span class="help" tabindex="0" data-tip="Offsite copy in S3 (IDrive e2) — your disaster-recovery copy. Survives the NAS dying.">ⓘ</span> <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b> <span id="coldSaved" class="sub"></span><span class="help" tabindex="0" data-tip="restic compresses and deduplicates. logical = total size of your files; stored = actual repo size after that; % saved = how much smaller it is.">ⓘ</span></div>
-    <div class="sub">Restore check: <span class="help" tabindex="0" data-tip="Fire drill: on a schedule, hoard restores a sampled file and verifies its contents — proof your backups actually come back, not just that they exist.">ⓘ</span> <span id="verifyBadge">—</span></div>
+    <div>hot: <span class="help below" tabindex="0" data-tip="Local staging repo on the NAS. Clients push backups here first over your LAN (fast). Mirrored offsite on a schedule.">ⓘ</span> <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b> <span id="hotSaved" class="sub"></span></div>
+    <div>cold: <span class="help below" tabindex="0" data-tip="Offsite copy in S3 (IDrive e2) — your disaster-recovery copy. Survives the NAS dying.">ⓘ</span> <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b> <span id="coldSaved" class="sub"></span><span class="help below" tabindex="0" data-tip="restic compresses and deduplicates. logical = total size of your files; stored = actual repo size after that; % saved = how much smaller it is.">ⓘ</span></div>
+    <div class="sub">Restore check: <span class="help below" tabindex="0" data-tip="Fire drill: on a schedule, hoard restores a sampled file and verifies its contents — proof your backups actually come back, not just that they exist.">ⓘ</span> <span id="verifyBadge">—</span></div>
   </div>
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
 </header>
