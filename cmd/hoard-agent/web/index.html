@@ -188,6 +188,7 @@
     <div class="mfoot">
       <span class="sub mono" id="mcur">—</span>
       <div class="bar">
+        <button class="add" onclick="newFolder()">+ New folder</button>
         <button id="browseActionBtn" class="add" onclick="addCurrent()">+ Add this folder</button>
         <button class="ghost" onclick="closeBrowse()">Close</button>
       </div>
@@ -285,6 +286,19 @@ function choosePath(p){
   res(p);
 }
 function addCurrent(){ browseMode==="pick" ? choosePath(browseCur) : addPath(browseCur); }
+// Create a subfolder inside the current directory and navigate into it, so it
+// can then be Chosen (restore) or Added (backup).
+async function newFolder(){
+  const name=prompt("New folder name — created inside:\n"+browseCur);
+  if(!name||!name.trim()) return;
+  try{
+    const r=await fetch("/api/mkdir",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({path:browseCur,name:name.trim()})});
+    const d=await r.json();
+    if(!r.ok){ alert("couldn't create folder: "+(d.error||r.status)); return; }
+    browseGo(d.path);
+  }catch(e){ alert("couldn't create folder"); }
+}
 
 async function load(){
   const c=await (await fetch("/api/config")).json();

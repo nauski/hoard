@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,4 +76,33 @@ func browse(path string) (BrowseResult, error) {
 		parent = ""
 	}
 	return BrowseResult{Path: abs, Parent: parent, Home: home, Entries: entries}, nil
+}
+
+// makeDir creates a single new directory named name inside parent (defaulting to
+// the user's home) and returns its absolute path. name must be a plain folder
+// name — no path separators, "." or ".." — so it can only create a child of
+// parent, never escape it. An already-existing directory is treated as success
+// so "New folder" is idempotent. Same single-user, same-privilege model as
+// browse: the agent binds localhost and acts as the running user.
+func makeDir(parent, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("folder name required")
+	}
+	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("invalid folder name %q", name)
+	}
+	if strings.TrimSpace(parent) == "" {
+		if home, _ := os.UserHomeDir(); home != "" {
+			parent = home
+		}
+	}
+	abs, err := filepath.Abs(filepath.Join(parent, name))
+	if err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(abs, 0o755); err != nil && !os.IsExist(err) {
+		return "", err
+	}
+	return abs, nil
 }

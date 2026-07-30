@@ -62,3 +62,35 @@ func TestAgentRestore(t *testing.T) {
 		t.Fatal("a.txt not restored")
 	}
 }
+
+func TestMakeDir(t *testing.T) {
+	parent := t.TempDir()
+
+	// Creates a new folder and returns its absolute path.
+	abs, err := makeDir(parent, "new one")
+	if err != nil {
+		t.Fatalf("makeDir: %v", err)
+	}
+	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+		t.Fatalf("expected a directory at %s, err=%v", abs, err)
+	}
+	if got := filepath.Dir(abs); got != parent {
+		t.Fatalf("created outside parent: %s not in %s", abs, parent)
+	}
+
+	// Idempotent: creating the same folder again succeeds.
+	if _, err := makeDir(parent, "new one"); err != nil {
+		t.Fatalf("re-create should succeed, got %v", err)
+	}
+
+	// Rejects names that could escape the parent.
+	for _, bad := range []string{"", "  ", ".", "..", "a/b", `a\b`} {
+		if _, err := makeDir(parent, bad); err == nil {
+			t.Fatalf("expected error for name %q", bad)
+		}
+	}
+	// A traversal attempt must not create anything above parent.
+	if _, err := os.Stat(filepath.Join(filepath.Dir(parent), "b")); err == nil {
+		t.Fatal("traversal name created a dir outside parent")
+	}
+}

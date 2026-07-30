@@ -30,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/snapshots", s.snapshots)
 	mux.HandleFunc("GET /api/browse", s.browseDir)
+	mux.HandleFunc("POST /api/mkdir", s.mkdir)
 	mux.HandleFunc("POST /api/backup", s.backup)
 	mux.HandleFunc("POST /api/restore", s.restore)
 	mux.HandleFunc("POST /api/backup/pause", s.control("pause"))
@@ -123,6 +124,26 @@ func (s *Server) browseDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// mkdir creates a new folder inside the given parent path (the folder picker's
+// current directory) and returns its absolute path so the GUI can navigate into
+// it. Used by the picker's "New folder" button.
+func (s *Server) mkdir(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	abs, err := makeDir(req.Path, req.Name)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": abs})
 }
 
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
