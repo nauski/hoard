@@ -17,6 +17,9 @@ import (
 	"github.com/nauski/hoard/internal/state"
 )
 
+// errBusy is returned when a restore is requested while another job holds the lock.
+var errBusy = fmt.Errorf("busy: another job is running")
+
 // Notifier sends a failure/staleness alert. Implemented by internal/api's
 // webhook sender; nil disables alerts.
 type Notifier interface {
@@ -87,6 +90,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 			if s.cfg.Load().Schedule.Check == hhmm && s.weekdayOK(now) {
 				lastFired = stamp
 				go s.Check(ctx)
+			}
+			if s.cfg.Load().Schedule.Verify == hhmm {
+				lastFired = stamp
+				go s.Verify(ctx)
 			}
 		}
 	}

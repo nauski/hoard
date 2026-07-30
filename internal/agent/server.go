@@ -31,6 +31,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/snapshots", s.snapshots)
 	mux.HandleFunc("GET /api/browse", s.browseDir)
 	mux.HandleFunc("POST /api/backup", s.backup)
+	mux.HandleFunc("POST /api/restore", s.restore)
 	mux.HandleFunc("POST /api/backup/pause", s.control("pause"))
 	mux.HandleFunc("POST /api/backup/resume", s.control("resume"))
 	mux.HandleFunc("POST /api/backup/cancel", s.control("cancel"))
@@ -133,6 +134,34 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		if err := s.agent.Backup(context.Background()); err != nil {
 			s.log.Error("manual backup failed", "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID     string `json:"id"`
+		Path   string `json:"path"`
+		Target string `json:"target"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing snapshot id"})
+		return
+	}
+	if req.Mode != "inplace" && req.Target == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing target"})
+		return
+	}
+	_, running := s.agent.LastRun()
+	if running {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a backup or restore is already running"})
+		return
+	}
+	go func() {
+		if err := s.agent.Restore(context.Background(), req.ID, req.Path, req.Target, req.Mode); err != nil {
+			s.log.Error("restore failed", "err", err)
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})

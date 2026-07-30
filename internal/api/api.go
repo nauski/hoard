@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
@@ -28,6 +29,10 @@ type Server struct {
 	webFS     fs.FS
 	client    *http.Client
 	live      *liveStore
+
+	restoreMu     sync.Mutex
+	restoreCancel context.CancelFunc // cancels the in-flight server restore, if any
+	restoreGen    uint64             // generation token so a stale goroutine can't clear a newer restoreCancel
 }
 
 func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store *state.Store, log *slog.Logger, webFS fs.FS) *Server {
@@ -61,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("POST /api/purge", s.handlePurge)
 	mux.HandleFunc("POST /api/delete-version", s.handleDeleteVersion)
+	mux.HandleFunc("POST /api/restore", s.handleRestore)
 	// Live running-backup aggregation across all clients.
 	mux.HandleFunc("POST /api/report", s.handleReport)
 	mux.HandleFunc("GET /api/running", s.handleRunning)
@@ -74,23 +80,25 @@ func (s *Server) Handler() http.Handler {
 }
 
 type statusResponse struct {
-	Now      time.Time                  `json:"now"`
-	Running  string                     `json:"running"`
-	Clients  map[string]state.Client    `json:"clients"`
-	Jobs     map[string]state.JobResult `json:"jobs"`
-	ColdRepo string                     `json:"cold_repo"`
-	HotRepo  string                     `json:"hot_repo"`
+	Now        time.Time                  `json:"now"`
+	Running    string                     `json:"running"`
+	Clients    map[string]state.Client    `json:"clients"`
+	Jobs       map[string]state.JobResult `json:"jobs"`
+	ColdRepo   string                     `json:"cold_repo"`
+	HotRepo    string                     `json:"hot_repo"`
+	LastVerify *state.VerifyResult        `json:"last_verify,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	snap := s.store.Snapshot()
 	writeJSON(w, http.StatusOK, statusResponse{
-		Now:      time.Now(),
-		Running:  s.sched.Running(),
-		Clients:  snap.Clients,
-		Jobs:     snap.LastByJob,
-		ColdRepo: redact(s.cfg.Load().Cold.Repository),
-		HotRepo:  s.cfg.Load().Hot.Repository,
+		Now:        time.Now(),
+		Running:    s.sched.Running(),
+		Clients:    snap.Clients,
+		Jobs:       snap.LastByJob,
+		ColdRepo:   redact(s.cfg.Load().Cold.Repository),
+		HotRepo:    s.cfg.Load().Hot.Repository,
+		LastVerify: snap.LastVerify,
 	})
 }
 

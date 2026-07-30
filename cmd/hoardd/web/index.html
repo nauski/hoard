@@ -76,6 +76,7 @@
   <div class="repo">
     <div>hot: <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b></div>
     <div>cold: <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b></div>
+    <div class="sub">Restore check: <span id="verifyBadge">—</span></div>
   </div>
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
 </header>
@@ -113,6 +114,7 @@
       <div><label class="sub">Integrity check at (HH:MM)</label><input id="cfgCheck" type="text" placeholder="04:00"></div>
       <div><label class="sub">Check weekday (0=Sun…6=Sat, blank=daily)</label><input id="cfgWeekday" type="text" placeholder="0"></div>
       <div><label class="sub">Stale after (e.g. 26h)</label><input id="cfgStale" type="text" placeholder="26h"></div>
+      <div><label class="sub">Verify (restore fire-drill, HH:MM — blank disables)</label><input id="cfgVerify" type="text" placeholder="03:30"></div>
     </div>
     <div class="sub" style="margin:12px 0 8px">Retention — keep</div>
     <div class="setgrid">
@@ -219,6 +221,15 @@ async function refresh(){
     $("#btnMirror").disabled = !!run;
     $("#btnCheck").disabled = !!run;
 
+    (function(){
+      const v = st.last_verify;
+      const el = $("#verifyBadge");
+      if(!v){ el.textContent="never run"; el.style.color=""; return; }
+      const age = Math.round((Date.now()-new Date(v.time))/3600000);
+      if(v.ok){ el.textContent="✓ verified "+age+"h ago"+(v.file?(" ("+v.file+")"):""); el.style.color="var(--ok)"; }
+      else { el.textContent="✗ FAILED: "+(v.err||""); el.style.color="var(--bad)"; }
+    })();
+
     const jobs = st.jobs || {};
     const order = ["mirror","check","prune"];
     $("#jobCards").innerHTML = order.map(j=>{
@@ -309,12 +320,23 @@ function renderVersions(){
     return `<div class="vrow" ${sel}>
       <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
+      <button class="mini" onclick="startRestore('${s.short_id}')">Restore…</button>
       <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
     </div>`;
   }).join("");
 }
 let bEntries=[];
 async function browseVersion(id){ bSnap=id; bDir="/"; renderVersions(); await browseDir("/"); }
+// Server-side restore: chosen-folder only (no in-place). Blank target = server default (/data/restore/…).
+async function startRestore(id){
+  const target = prompt("Restore version "+id+" to which folder on the server?\n(blank = /data/restore/…)", "");
+  if(target === null) return; // cancelled
+  const r = await fetch("/api/restore", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id:id, target:target.trim(), overwrite:"always"})});
+  const j = await r.json();
+  if(r.ok){ toast("restore started… (progress in Running backups)"); }
+  else { alert("restore error: "+(j.error||r.status)); }
+}
 async function browseDir(dir){
   bDir=dir;
   const r=await fetch("/api/ls?id="+encodeURIComponent(bSnap)+"&path="+encodeURIComponent(dir));
@@ -410,6 +432,7 @@ async function loadConfig(){
     $("#cfgMirror").value=c.schedule.mirror||"";
     $("#cfgCheck").value=c.schedule.check||"";
     $("#cfgWeekday").value=(c.schedule.check_weekday==null)?"":c.schedule.check_weekday;
+    $("#cfgVerify").value=c.schedule.verify||"";
     $("#cfgStale").value=c.schedule.stale_after||"";
     $("#cfgKLast").value=c.retention.keep_last||0;
     $("#cfgKDaily").value=c.retention.keep_daily||0;
@@ -432,7 +455,8 @@ async function saveConfig(){
   const num=id=>{const n=parseInt($("#"+id).value,10);return isNaN(n)?0:n;};
   const body={
     schedule:{mirror:$("#cfgMirror").value.trim(),check:$("#cfgCheck").value.trim(),
-      check_weekday: wd===""?null:parseInt(wd,10), stale_after:$("#cfgStale").value.trim()},
+      check_weekday: wd===""?null:parseInt(wd,10), stale_after:$("#cfgStale").value.trim(),
+      verify:$("#cfgVerify").value.trim()},
     retention:{keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")},
     alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked},
     cold:{repository:$("#cfgColdRepo").value.trim(),s3_access_key_id:$("#cfgColdKey").value.trim(),
@@ -515,7 +539,8 @@ async function loadRunning(){
       $("#runningList").appendChild(el);
     }
     $("#rh-"+c.host).textContent=c.host;
-    const badge=$("#rb-"+c.host); badge.textContent=L.paused?"paused":"backing up"; badge.className="badge "+(L.paused?"b-warn":"b-ok");
+    const verb = (L.kind === "restore") ? "restoring" : "backing up";
+    const badge=$("#rb-"+c.host); badge.textContent=L.paused?"paused":verb; badge.className="badge "+(L.paused?"b-warn":"b-ok");
     const f=$("#rf-"+c.host); f.style.width=pct+"%"; f.style.opacity=L.paused?0.5:1;
     $("#rp-"+c.host).textContent=pct+"%";
     $("#rfl-"+c.host).textContent=(p.files_done||0)+" / "+(p.total_files||0);
