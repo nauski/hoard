@@ -35,8 +35,8 @@ func TestFailureAlertFiresOnceAtThreshold(t *testing.T) {
 	defer hook.Close()
 
 	cfg := config.NewStore(&config.Config{
-		Hot:  config.Repo{Repository: "/h"},
-		Cold: config.Repo{Repository: "s3:x"},
+		Hot:   config.Repo{Repository: "/h"},
+		Cold:  config.Repo{Repository: "s3:x"},
 		Alert: config.Alert{WebhookURL: hook.URL, OnFailure: true, FailureThreshold: 3},
 	}, "")
 	st, _ := state.Load("")

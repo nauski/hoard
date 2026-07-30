@@ -13,12 +13,12 @@ import (
 // password are write-only: their values never leave the server, only whether
 // they are set.
 type coldView struct {
-	Repository          string `json:"repository"`
-	S3AccessKeyID       string `json:"s3_access_key_id"`
-	PasswordSet         bool   `json:"password_set"`
-	SecretSet           bool   `json:"secret_set"`
-	LimitUploadKiBps    int    `json:"limit_upload_kibps"`
-	LimitDownloadKiBps  int    `json:"limit_download_kibps"`
+	Repository         string `json:"repository"`
+	S3AccessKeyID      string `json:"s3_access_key_id"`
+	PasswordSet        bool   `json:"password_set"`
+	SecretSet          bool   `json:"secret_set"`
+	LimitUploadKiBps   int    `json:"limit_upload_kibps"`
+	LimitDownloadKiBps int    `json:"limit_download_kibps"`
 }
 
 // smtpView is the editable email-alert config. The password is write-only:

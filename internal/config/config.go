@@ -97,8 +97,8 @@ type Alert struct {
 // (a secret); it is persisted to the 0600 config file and shown write-only in the
 // UI. Empty Host/From/To disables email.
 type SMTP struct {
-	Host     string `json:"host"`     // e.g. smtp.gmail.com
-	Port     string `json:"port"`     // e.g. 587 (blank -> 587)
+	Host     string `json:"host"` // e.g. smtp.gmail.com
+	Port     string `json:"port"` // e.g. 587 (blank -> 587)
 	Username string `json:"username"`
 	Password string `json:"password"` // app password (secret)
 	From     string `json:"from"`
