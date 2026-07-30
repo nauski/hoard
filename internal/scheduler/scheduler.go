@@ -88,6 +88,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 				lastFired = stamp
 				go s.Check(ctx)
 			}
+			if s.cfg.Load().Schedule.Verify == hhmm {
+				lastFired = stamp
+				go s.Verify(ctx)
+			}
 		}
 	}
 }
