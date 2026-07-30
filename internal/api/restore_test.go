@@ -69,3 +69,35 @@ func TestHandleRestore(t *testing.T) {
 	}
 	t.Fatal("restore did not produce a.txt in time")
 }
+
+// TestHandleRestore_RejectsConcurrent guards against a lost-cancel race: if a
+// restore is already in flight (restoreCancel set), a second POST must be
+// rejected with 409 and must NOT touch the existing restoreCancel — otherwise
+// a rejected request's cleanup could nil out the winner's cancel func, and a
+// later cancel click would silently no-op while the real restore kept running.
+func TestHandleRestore_RejectsConcurrent(t *testing.T) {
+	srv, target := newRestoreServer(t)
+
+	// Simulate an in-flight restore by pre-populating restoreCancel, as the
+	// real handler would while a restore goroutine is running.
+	sentinel := func() {}
+	srv.restoreMu.Lock()
+	srv.restoreCancel = sentinel
+	srv.restoreMu.Unlock()
+
+	body, _ := json.Marshal(map[string]string{"id": "latest", "target": target})
+	req := httptest.NewRequest(http.MethodPost, "/api/restore", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.handleRestore(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	srv.restoreMu.Lock()
+	got := srv.restoreCancel
+	srv.restoreMu.Unlock()
+	if got == nil {
+		t.Fatal("rejected request cleared restoreCancel; the in-flight restore's cancel was lost")
+	}
+}

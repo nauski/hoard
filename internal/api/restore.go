@@ -38,6 +38,14 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s.restoreMu.Lock()
+	if s.restoreCancel != nil {
+		s.restoreMu.Unlock()
+		cancel()
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a restore is already running"})
+		return
+	}
+	s.restoreGen++
+	gen := s.restoreGen
 	s.restoreCancel = cancel
 	s.restoreMu.Unlock()
 
@@ -74,7 +82,9 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		s.live.report(serverRestoreHost, mustJSON(map[string]any{"running": false, "kind": "restore"}), time.Now())
 		s.restoreMu.Lock()
-		s.restoreCancel = nil
+		if s.restoreGen == gen {
+			s.restoreCancel = nil
+		}
 		s.restoreMu.Unlock()
 	}()
 

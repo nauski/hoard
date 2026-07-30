@@ -32,6 +32,7 @@ type Server struct {
 
 	restoreMu     sync.Mutex
 	restoreCancel context.CancelFunc // cancels the in-flight server restore, if any
+	restoreGen    uint64             // generation token so a stale goroutine can't clear a newer restoreCancel
 }
 
 func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store *state.Store, log *slog.Logger, webFS fs.FS) *Server {
