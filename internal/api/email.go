@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/smtp"
 	"strings"
 	"time"
@@ -53,4 +54,19 @@ func sendEmail(sm config.SMTP, subject, body string) error {
 	case <-time.After(20 * time.Second):
 		return fmt.Errorf("smtp send to %s timed out", addr)
 	}
+}
+
+// handleTestEmail sends a fixed test message via the current SMTP config so the
+// user can verify email before relying on it. Mirrors test-cold.
+func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
+	sm := s.cfg.Load().SMTP
+	if sm.Host == "" || sm.From == "" || sm.To == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "SMTP not configured"})
+		return
+	}
+	if err := sendEmail(sm, "hoard test email", "This is a test alert from hoard. If you got this, email alerts work."); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

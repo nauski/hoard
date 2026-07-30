@@ -155,3 +155,55 @@ func TestNotifyFansOutToBoth(t *testing.T) {
 		t.Fatalf("email not sent:\n%s", captured.String())
 	}
 }
+
+func TestSMTPConfigRoundTripWriteOnly(t *testing.T) {
+	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"}}, "")
+	st, _ := state.Load("")
+	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
+
+	body := `{"smtp":{"host":"smtp.gmail.com","port":"587","username":"me","from":"a@x.com","to":"b@y.com","password":"secretpw"}}`
+	w := httptest.NewRecorder()
+	srv.handleSetConfig(w, httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("set: %d %s", w.Code, w.Body.String())
+	}
+	// GET exposes password_set, never the password.
+	w = httptest.NewRecorder()
+	srv.handleGetConfig(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	got := w.Body.String()
+	if !strings.Contains(got, `"password_set":true`) || strings.Contains(got, "secretpw") {
+		t.Fatalf("password leaked or password_set missing: %s", got)
+	}
+	// A subsequent POST with blank password keeps the stored one.
+	w = httptest.NewRecorder()
+	srv.handleSetConfig(w, httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"smtp":{"host":"smtp.gmail.com","port":"587","username":"me","from":"a@x.com","to":"b@y.com","password":""}}`)))
+	if cfg.Load().SMTP.Password != "secretpw" {
+		t.Fatalf("blank password wiped the stored secret: %q", cfg.Load().SMTP.Password)
+	}
+}
+
+func TestHandleTestEmail(t *testing.T) {
+	host, port, _, closeFn := startMockSMTP(t)
+	defer closeFn()
+	cfg := config.NewStore(&config.Config{
+		Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"},
+		SMTP: config.SMTP{Host: host, Port: port, From: "a@x.com", To: "b@y.com"},
+	}, "")
+	st, _ := state.Load("")
+	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
+
+	w := httptest.NewRecorder()
+	srv.handleTestEmail(w, httptest.NewRequest(http.MethodPost, "/api/config/test-email", nil))
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("test-email not ok: %s", w.Body.String())
+	}
+
+	// Unconfigured → ok:false.
+	cfg2 := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"}}, "")
+	srv2 := New(cfg2, "restic", scheduler.New(cfg2, "restic", st, testLogger()), st, testLogger(), nil)
+	w = httptest.NewRecorder()
+	srv2.handleTestEmail(w, httptest.NewRequest(http.MethodPost, "/api/config/test-email", nil))
+	if !strings.Contains(w.Body.String(), `"ok":false`) {
+		t.Fatalf("unconfigured test-email should be ok:false: %s", w.Body.String())
+	}
+}
