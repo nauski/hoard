@@ -33,7 +33,7 @@
   button.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
   .actions { display:flex; gap:10px; }
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
-  .foot { color:var(--muted); font-size:12px; text-align:center; padding-bottom:24px; }
+  .foot { color:var(--muted); font-size:12px; text-align:center; padding-bottom:24px; margin-top:20px; }
   a { color:var(--accent); }
   select { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:13px; }
   input[type=text],input[type=password] { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:13px; width:100%; }
@@ -121,6 +121,7 @@
       <button id="btnCheck" class="secondary">Verify integrity</button><span class="help" tabindex="0" data-tip="Ask restic to re-read the offsite repo's data and confirm nothing is corrupted.">ⓘ</span>
     </div>
     <p class="sub" id="actionMsg"></p>
+    <div id="serverJob" class="sub" style="margin-top:8px"></div>
   </div>
 
   <div class="card">
@@ -286,13 +287,37 @@ async function refresh(){
     $("#btnMirror").disabled = !!run;
     $("#btnCheck").disabled = !!run;
 
+    // Live server-job line: while a server job (mirror/check/prune/verify/restore)
+    // is running, show which one; otherwise show the most recently finished
+    // server job's result (mirror/check/prune/verify — restore has its own
+    // "Running backups" panel below).
     (function(){
-      const v = st.last_verify;
-      const el = $("#verifyBadge");
-      if(!v){ el.textContent="never run"; el.style.color=""; return; }
-      const age = Math.round((Date.now()-new Date(v.time))/3600000);
-      if(v.ok){ el.textContent="✓ verified "+age+"h ago"+(v.file?(" ("+v.file+")"):""); el.style.color="var(--ok)"; }
-      else { el.textContent="✗ FAILED: "+(v.err||""); el.style.color="var(--bad)"; }
+      const labels = {mirror:"Mirroring to e2", check:"Checking e2 integrity", prune:"Applying retention", verify:"Verifying a restore", restore:"Restoring"};
+      const el = $("#serverJob");
+      if(!el) return;
+      if(run){
+        el.innerHTML = '▸ '+esc(labels[run]||"Working")+'…';
+        el.style.color = "var(--warn)";
+      } else {
+        const jobs = st.jobs||{};
+        let newest=null;
+        ["mirror","check","prune","verify"].forEach(k=>{ const j=jobs[k]; if(j && (!newest || (j.ended_at||"")>(newest.ended_at||""))) newest=j; });
+        el.innerHTML = newest ? (newest.ok?'✓ ':'✗ ')+esc(newest.message||"") : "";
+        el.style.color = newest && !newest.ok ? "var(--bad)" : "var(--muted)";
+      }
+    })();
+
+    // Honest verify badge: distinguishes "verified" (ok + a client file was
+    // sampled) from "skipped" (ok but no client data yet to sample) from
+    // "failed" from "never run".
+    (function(){
+      const v = st.last_verify, el = $("#verifyBadge");
+      if(!el) return;
+      if(!v){ el.textContent="— not run"; el.style.color="var(--muted)"; return; }
+      const vage = Math.max(0, Math.round((Date.now()-new Date(v.time))/3600000));
+      if(!v.ok){ el.textContent="✗ FAILED: "+(v.err||""); el.style.color="var(--bad)"; return; }
+      if(v.file){ el.textContent="✓ verified "+(v.file.split("/").pop())+" · "+vage+"h ago"; el.style.color="var(--ok)"; }
+      else { el.textContent="— skipped (no client data yet)"; el.style.color="var(--muted)"; }
     })();
 
     const jobs = st.jobs || {};
@@ -340,6 +365,7 @@ async function trigger(job){
   const res = await fetch("/api/actions/"+job, {method:"POST"});
   const j = await res.json();
   $("#actionMsg").textContent = res.ok ? (job+" started") : ("error: "+(j.error||res.status));
+  if(res.ok){ const sj=$("#serverJob"); if(sj) sj.textContent="started…"; }
   setTimeout(refresh, 500);
 }
 $("#btnMirror").onclick = ()=>trigger("mirror");
