@@ -300,7 +300,9 @@ func (c *Client) Restore(ctx context.Context, snapID, subpath, target, overwrite
 	if subpath != "" {
 		spec = snapID + ":" + subpath
 	}
-	args := []string{"restore", spec, "--target", target, "--overwrite", overwrite, "--json", "--verbose"}
+	// restic restore needs --verbose=2 (unlike backup, where a single
+	// --verbose suffices) to emit per-file verbose_status events.
+	args := []string{"restore", spec, "--target", target, "--overwrite", overwrite, "--json", "--verbose=2"}
 	if verify {
 		args = append(args, "--verify")
 	}

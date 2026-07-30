@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/nauski/hoard/internal/config"
@@ -95,6 +96,42 @@ func TestRestoreSubpath(t *testing.T) {
 	}
 	if sawHello {
 		t.Fatal("subpath restore should not include hello.txt (outside sub)")
+	}
+}
+
+func TestRestoreActivityHook(t *testing.T) {
+	c, _ := newTestRepo(t)
+	ctx := context.Background()
+	target := t.TempDir()
+
+	var mu sync.Mutex
+	type activity struct{ action, item string }
+	var activities []activity
+
+	hooks := RestoreHooks{
+		OnActivity: func(action, item string) {
+			mu.Lock()
+			defer mu.Unlock()
+			activities = append(activities, activity{action, item})
+		},
+	}
+	if _, _, err := c.Restore(ctx, "latest", "", target, "always", false, hooks); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(activities) == 0 {
+		t.Fatal("OnActivity never fired; expected at least one per-file event")
+	}
+	var sawHello bool
+	for _, a := range activities {
+		if filepath.Base(a.item) == "hello.txt" {
+			sawHello = true
+		}
+	}
+	if !sawHello {
+		t.Fatalf("OnActivity never named hello.txt, got %+v", activities)
 	}
 }
 
