@@ -92,8 +92,8 @@
   <div class="card">
     <h2>Clients</h2>
     <table>
-      <thead><tr><th>Host</th><th>Last snapshot</th><th>Age</th><th>Size</th><th>Paths</th><th>State</th></tr></thead>
-      <tbody id="clients"><tr><td colspan="5" class="sub">loading…</td></tr></tbody>
+      <thead><tr><th>Host</th><th>Last snapshot</th><th>Age</th><th>Size</th><th>Paths</th><th>State</th><th>Last run</th></tr></thead>
+      <tbody id="clients"><tr><td colspan="7" class="sub">loading…</td></tr></tbody>
     </table>
   </div>
 
@@ -128,6 +128,8 @@
     <div class="setgrid">
       <div style="grid-column:1/-2"><label class="sub">Webhook URL (ntfy / Discord-compatible)</label><input id="cfgWebhook" type="text" placeholder="https://ntfy.sh/your-topic"></div>
       <div><label class="sub">&nbsp;</label><label><input type="checkbox" id="cfgOnStale"> alert when a client goes stale</label></div>
+      <div><label class="sub">&nbsp;</label><label><input type="checkbox" id="cfgOnFailure"> alert on repeated backup failures</label></div>
+      <div><label class="sub">Failure threshold</label><input id="cfgFailThresh" type="text" style="width:60px" placeholder="3"></div>
     </div>
     <div class="sub" style="margin:12px 0 8px">Offsite storage — any S3-compatible provider (IDrive e2, AWS S3, Backblaze B2, Wasabi, MinIO, Cloudflare R2…)</div>
     <div id="kitBanner" class="card" style="display:none;border-color:var(--warn);background:rgba(210,153,34,.08);margin-bottom:12px">
@@ -254,9 +256,17 @@ async function refresh(){
     $("#clients").innerHTML = keys.length ? keys.map(k=>{
       const c = clients[k];
       const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">fresh</span>';
+      const o = (st.outcomes||{})[c.hostname];
+      let runCell = '<span class="sub">—</span>';
+      if(o){
+        const raw = o.message || "";
+        runCell = o.ok
+          ? '<span style="color:var(--ok)">✓ ok</span>'
+          : '<span style="color:var(--bad)">✗ failed'+(o.consecutive_failures>1?(' ×'+o.consecutive_failures):'')+'</span><div class="sub" title="'+esc(raw).replace(/"/g,'&quot;')+'">'+esc(raw.slice(0,60))+'</div>';
+      }
       return `<tr><td class="mono">${c.hostname}</td><td>${fmt(c.last_snapshot)}</td>
-        <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}</td></tr>`;
-    }).join("") : '<tr><td colspan="6" class="sub">no client snapshots yet</td></tr>';
+        <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}</td><td>${runCell}</td></tr>`;
+    }).join("") : '<tr><td colspan="7" class="sub">no client snapshots yet</td></tr>';
   }catch(e){ /* transient */ }
 
   try{
@@ -449,6 +459,8 @@ async function loadConfig(){
     $("#cfgKYearly").value=c.retention.keep_yearly||0;
     $("#cfgWebhook").value=c.alert.webhook_url||"";
     $("#cfgOnStale").checked=!!c.alert.on_stale;
+    $("#cfgOnFailure").checked=!!c.alert.on_failure;
+    $("#cfgFailThresh").value=c.alert.failure_threshold||3;
     $("#cfgColdRepo").value=(c.cold&&c.cold.repository)||"";
     $("#cfgColdKey").value=(c.cold&&c.cold.s3_access_key_id)||"";
     $("#cfgColdSecret").value=""; $("#cfgColdPw").value="";
@@ -475,7 +487,8 @@ async function saveConfig(){
       check_weekday: wd===""?null:parseInt(wd,10), stale_after:$("#cfgStale").value.trim(),
       verify:$("#cfgVerify").value.trim()},
     retention:{keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")},
-    alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked},
+    alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked,
+      on_failure:$("#cfgOnFailure").checked,failure_threshold:(parseInt($("#cfgFailThresh").value,10)||3)},
     cold:{repository:$("#cfgColdRepo").value.trim(),s3_access_key_id:$("#cfgColdKey").value.trim(),
       s3_secret_access_key:$("#cfgColdSecret").value, password:$("#cfgColdPw").value}
   };
