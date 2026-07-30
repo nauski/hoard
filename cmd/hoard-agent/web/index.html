@@ -14,7 +14,13 @@
   header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
   header h1 { font-size:18px; margin:0; }
   header .host { color:var(--muted); font-size:12px; margin-left:auto; }
-  main { padding:24px; max-width:820px; margin:0 auto; display:grid; gap:20px; }
+  main { padding:24px; max-width:820px; margin:0 auto; }
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);padding:0 24px;max-width:820px;margin:12px auto 0}
+  .tab-btn{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--muted);padding:10px 14px;cursor:pointer;font-weight:600;font-size:13px;border-radius:0}
+  .tab-btn:hover{color:var(--fg)}
+  .tab-btn.active{color:var(--fg);border-bottom-color:var(--accent)}
+  .tab{display:none}
+  .tab.active{display:grid;gap:20px}
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 12px; }
   label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
@@ -77,7 +83,58 @@
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
 </header>
 
+<nav class="tabs">
+  <button class="tab-btn" data-tab="backup" onclick="showTab('backup')">Backup</button>
+  <button class="tab-btn" data-tab="browse" onclick="showTab('browse')">Browse</button>
+  <button class="tab-btn" data-tab="settings" onclick="showTab('settings')">Settings</button>
+</nav>
+
 <main>
+  <section class="tab" id="tab-backup">
+  <div class="card">
+    <div class="bar">
+      <button id="save" class="ghost" onclick="save()">Save settings</button>
+      <button id="now" class="primary" onclick="backup()">Back up now</button>
+      <span id="msg" class="msg sub"></span>
+    </div>
+  </div>
+
+  <div class="card" id="progressCard" style="display:none">
+    <h2 id="runTitle">Running backup</h2>
+    <div class="progress">
+      <div class="pbar"><div id="pfill" class="pfill"></div></div>
+      <div class="pstats">
+        <span><b id="ppct">0%</b> done</span>
+        <span>files <b id="pfiles">0 / 0</b></span>
+        <span>data <b id="pbytes">0 / 0</b></span>
+        <span>elapsed <b id="pelapsed">0s</b></span>
+        <span>ETA <b id="peta">—</b></span>
+      </div>
+    </div>
+    <div class="ctrls">
+      <button id="btnPause" class="secondary" onclick="ctrl('pause')">⏸ Pause</button>
+      <button id="btnResume" class="secondary" onclick="ctrl('resume')" style="display:none">▶ Resume</button>
+      <button id="btnCancel" class="secondary" onclick="ctrl('cancel')" style="border-color:var(--bad);color:var(--bad)">✕ Cancel</button>
+      <span id="runMsg" class="sub"></span>
+    </div>
+    <div id="term" class="term"></div>
+  </div>
+
+  <div class="card">
+    <h2>Last backup</h2>
+    <div id="last" class="sub">—</div>
+  </div>
+  </section>
+
+  <section class="tab" id="tab-browse">
+  <div class="card">
+    <h2>Browse &amp; manage your backups</h2>
+    <div id="bVersions"><div class="sub">loading versions…</div></div>
+    <div id="bFiles" style="margin-top:12px"></div>
+  </div>
+  </section>
+
+  <section class="tab" id="tab-settings">
   <div class="card">
     <h2>Settings — where this machine backs up to</h2>
     <label>Backup server (restic REST URL) — the hoard server's push endpoint</label>
@@ -118,46 +175,7 @@
     <div id="excludes" class="list"></div>
     <button class="add" onclick="addRow('excludes','')">+ add exclude</button>
   </div>
-
-  <div class="card">
-    <div class="bar">
-      <button id="save" class="ghost" onclick="save()">Save settings</button>
-      <button id="now" class="primary" onclick="backup()">Back up now</button>
-      <span id="msg" class="msg sub"></span>
-    </div>
-  </div>
-
-  <div class="card" id="progressCard" style="display:none">
-    <h2 id="runTitle">Running backup</h2>
-    <div class="progress">
-      <div class="pbar"><div id="pfill" class="pfill"></div></div>
-      <div class="pstats">
-        <span><b id="ppct">0%</b> done</span>
-        <span>files <b id="pfiles">0 / 0</b></span>
-        <span>data <b id="pbytes">0 / 0</b></span>
-        <span>elapsed <b id="pelapsed">0s</b></span>
-        <span>ETA <b id="peta">—</b></span>
-      </div>
-    </div>
-    <div class="ctrls">
-      <button id="btnPause" class="secondary" onclick="ctrl('pause')">⏸ Pause</button>
-      <button id="btnResume" class="secondary" onclick="ctrl('resume')" style="display:none">▶ Resume</button>
-      <button id="btnCancel" class="secondary" onclick="ctrl('cancel')" style="border-color:var(--bad);color:var(--bad)">✕ Cancel</button>
-      <span id="runMsg" class="sub"></span>
-    </div>
-    <div id="term" class="term"></div>
-  </div>
-
-  <div class="card">
-    <h2>Last backup</h2>
-    <div id="last" class="sub">—</div>
-  </div>
-
-  <div class="card">
-    <h2>Browse &amp; manage your backups</h2>
-    <div id="bVersions"><div class="sub">loading versions…</div></div>
-    <div id="bFiles" style="margin-top:12px"></div>
-  </div>
+  </section>
 
   <div class="foot">hoard agent · pushes to your hoard server · status refreshes every 5s</div>
 </main>
@@ -208,6 +226,21 @@
 
 <script>
 const $=s=>document.querySelector(s);
+const TABS=["backup","browse","settings"];
+function showTab(name){
+  if(!TABS.includes(name)) name="backup";
+  TABS.forEach(t=>{
+    const s=document.getElementById("tab-"+t); if(s) s.classList.toggle("active", t===name);
+    const b=document.querySelector('.tab-btn[data-tab="'+t+'"]'); if(b) b.classList.toggle("active", t===name);
+  });
+  try{ localStorage.setItem("hoard-agent-tab", name); }catch(e){}
+  if(location.hash.replace("#","")!==name){ history.replaceState(null,"","#"+name); }
+}
+(function(){
+  const h=(location.hash||"").replace("#","");
+  let saved=null; try{ saved=localStorage.getItem("hoard-agent-tab"); }catch(e){}
+  showTab(TABS.includes(h)?h:(TABS.includes(saved)?saved:"backup"));
+})();
 // theme toggle (initial theme set by the inline <head> script to avoid flash)
 function themeIcon(){ const b=document.getElementById('themeToggle'); if(b) b.textContent=document.documentElement.getAttribute('data-theme')==='light'?'☀️':'🌙'; }
 function toggleTheme(){ const next=document.documentElement.getAttribute('data-theme')==='light'?'dark':'light'; document.documentElement.setAttribute('data-theme',next); try{localStorage.setItem('hoard-theme',next);}catch(e){} themeIcon(); }
