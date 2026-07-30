@@ -154,8 +154,8 @@
       <div><label class="sub">S3 access key ID</label><input id="cfgColdKey" type="text"></div>
       <div><label class="sub">S3 secret access key <span id="cfgSecretHint" class="sub"></span></label><input id="cfgColdSecret" type="password" placeholder="leave blank to keep"></div>
       <div><label class="sub">Repo password <span id="cfgPwHint" class="sub"></span></label><input id="cfgColdPw" type="password" placeholder="leave blank to keep"></div>
-      <div><label class="sub">Upload limit (KiB/s, 0 = unlimited) <span class="sub">2000 ≈ 2 MB/s</span></label><input id="cfgColdUp" type="text" placeholder="0"></div>
-      <div><label class="sub">Download limit (KiB/s, 0 = unlimited)</label><input id="cfgColdDown" type="text" placeholder="0"></div>
+      <div><label class="sub">Upload limit (KiB/s, 0 = unlimited) <span class="sub">2000 ≈ 2 MB/s</span></label><input id="cfgColdUp" type="number" min="0" placeholder="0"></div>
+      <div><label class="sub">Download limit (KiB/s, 0 = unlimited)</label><input id="cfgColdDown" type="number" min="0" placeholder="0"></div>
     </div>
     <div class="bar" style="margin-top:14px">
       <button onclick="saveConfig()">Save settings</button>
