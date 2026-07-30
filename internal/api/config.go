@@ -13,10 +13,12 @@ import (
 // password are write-only: their values never leave the server, only whether
 // they are set.
 type coldView struct {
-	Repository    string `json:"repository"`
-	S3AccessKeyID string `json:"s3_access_key_id"`
-	PasswordSet   bool   `json:"password_set"`
-	SecretSet     bool   `json:"secret_set"`
+	Repository          string `json:"repository"`
+	S3AccessKeyID       string `json:"s3_access_key_id"`
+	PasswordSet         bool   `json:"password_set"`
+	SecretSet           bool   `json:"secret_set"`
+	LimitUploadKiBps    int    `json:"limit_upload_kibps"`
+	LimitDownloadKiBps  int    `json:"limit_download_kibps"`
 }
 
 // smtpView is the editable email-alert config. The password is write-only:
@@ -50,10 +52,12 @@ func (s *Server) configView() configResponse {
 		HotRepo:        c.Hot.Repository,
 		HotPasswordSet: c.Hot.Password != "",
 		Cold: coldView{
-			Repository:    c.Cold.Repository,
-			S3AccessKeyID: c.Cold.S3AccessKeyID,
-			PasswordSet:   c.Cold.Password != "",
-			SecretSet:     c.Cold.S3SecretAccessKey != "",
+			Repository:         c.Cold.Repository,
+			S3AccessKeyID:      c.Cold.S3AccessKeyID,
+			PasswordSet:        c.Cold.Password != "",
+			SecretSet:          c.Cold.S3SecretAccessKey != "",
+			LimitUploadKiBps:   c.Cold.LimitUploadKiBps,
+			LimitDownloadKiBps: c.Cold.LimitDownloadKiBps,
 		},
 		SMTP: smtpView{
 			Host: c.SMTP.Host, Port: c.SMTP.Port, Username: c.SMTP.Username,
@@ -78,10 +82,12 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		Retention *config.Retention `json:"retention"`
 		Alert     *config.Alert     `json:"alert"`
 		Cold      *struct {
-			Repository        *string `json:"repository"`
-			S3AccessKeyID     *string `json:"s3_access_key_id"`
-			S3SecretAccessKey *string `json:"s3_secret_access_key"`
-			Password          *string `json:"password"`
+			Repository         *string `json:"repository"`
+			S3AccessKeyID      *string `json:"s3_access_key_id"`
+			S3SecretAccessKey  *string `json:"s3_secret_access_key"`
+			Password           *string `json:"password"`
+			LimitUploadKiBps   *int    `json:"limit_upload_kibps"`
+			LimitDownloadKiBps *int    `json:"limit_download_kibps"`
 		} `json:"cold"`
 		SMTP *struct {
 			Host, Port, Username, From, To, Password string
@@ -113,6 +119,12 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.Cold.Password != nil && *req.Cold.Password != "" {
 				c.Cold.Password = *req.Cold.Password
+			}
+			if req.Cold.LimitUploadKiBps != nil {
+				c.Cold.LimitUploadKiBps = *req.Cold.LimitUploadKiBps
+			}
+			if req.Cold.LimitDownloadKiBps != nil {
+				c.Cold.LimitDownloadKiBps = *req.Cold.LimitDownloadKiBps
 			}
 		}
 		if req.SMTP != nil {
