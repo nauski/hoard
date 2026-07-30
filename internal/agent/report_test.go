@@ -13,6 +13,43 @@ import (
 	"time"
 )
 
+// TestBackupOutcomeExclusions verifies backupOutcome()'s filtering rules
+// directly, without needing restic on PATH: restores never produce an
+// outcome, a user-cancelled backup never produces an outcome, and a
+// completed backup (success or genuine failure) reports its OK/Message
+// as-is.
+func TestBackupOutcomeExclusions(t *testing.T) {
+	t.Run("restore is excluded", func(t *testing.T) {
+		a := &Agent{lastRun: RunResult{Kind: "restore", OK: false, Message: "x"}}
+		if got := a.backupOutcome(); got != nil {
+			t.Fatalf("backupOutcome() = %+v, want nil for a restore run", got)
+		}
+	})
+
+	t.Run("cancelled backup is excluded", func(t *testing.T) {
+		a := &Agent{lastRun: RunResult{Kind: "backup", OK: false, Message: "cancelled"}}
+		if got := a.backupOutcome(); got != nil {
+			t.Fatalf("backupOutcome() = %+v, want nil for a cancelled backup", got)
+		}
+	})
+
+	t.Run("successful backup is reported", func(t *testing.T) {
+		a := &Agent{lastRun: RunResult{Kind: "backup", OK: true, Message: "done"}}
+		got := a.backupOutcome()
+		if got == nil || !got.OK || got.Message != "done" {
+			t.Fatalf("backupOutcome() = %+v, want {OK:true, Message:done}", got)
+		}
+	})
+
+	t.Run("failed backup is reported", func(t *testing.T) {
+		a := &Agent{lastRun: RunResult{Kind: "backup", OK: false, Message: "boom"}}
+		got := a.backupOutcome()
+		if got == nil || got.OK || got.Message != "boom" {
+			t.Fatalf("backupOutcome() = %+v, want {OK:false, Message:boom}", got)
+		}
+	})
+}
+
 func TestFailedBackupReportsOutcome(t *testing.T) {
 	if _, err := exec.LookPath("restic"); err != nil {
 		t.Skip("restic not on PATH")

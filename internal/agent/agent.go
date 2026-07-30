@@ -464,6 +464,8 @@ func (a *Agent) Backup(ctx context.Context) error {
 	start := time.Now()
 	rr := RunResult{StartedAt: start, Kind: "backup"}
 
+	go a.reportLoop(runCtx) // stream live state to the server (and pick up commands); also covers pre-flight failures below
+
 	cl, err := a.resticClient()
 	if err != nil {
 		rr.EndedAt = time.Now()
@@ -491,7 +493,6 @@ func (a *Agent) Backup(ctx context.Context) error {
 			a.mu.Unlock()
 		},
 	}
-	go a.reportLoop(runCtx) // stream live state to the server (and pick up commands)
 	summary, out, err := cl.Backup(runCtx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, hooks)
 	rr.EndedAt = time.Now()
 	rr.Output = out
