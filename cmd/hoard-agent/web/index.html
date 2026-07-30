@@ -179,7 +179,7 @@
 <div id="browseBg" class="modal-bg">
   <div class="modal">
     <div class="mhead">
-      <h3>Pick a folder</h3>
+      <h3 id="browseTitle">Pick a folder</h3>
       <button class="x" onclick="browseUp()" title="Up one level">↑</button>
       <input id="crumb" class="crumb" value="" onkeydown="if(event.key==='Enter')browseTo(this.value)" />
       <button class="x" onclick="browseGo(browseHome)" title="Home">⌂</button>
@@ -188,7 +188,7 @@
     <div class="mfoot">
       <span class="sub mono" id="mcur">—</span>
       <div class="bar">
-        <button class="add" onclick="addCurrent()">+ Add this folder</button>
+        <button id="browseActionBtn" class="add" onclick="addCurrent()">+ Add this folder</button>
         <button class="ghost" onclick="closeBrowse()">Close</button>
       </div>
     </div>
@@ -217,10 +217,34 @@ function addRow(kind,val){
 function readList(kind){ return [...document.querySelectorAll("#"+kind+" input")].map(i=>i.value.trim()).filter(Boolean); }
 
 // --- folder picker ---
+// Two uses of the same modal: "config" mode (default) lets the user browse
+// and add entries to the backup paths list; "pick" mode (driven by
+// pickFolder()) lets any caller — e.g. the restore flow — choose a single
+// destination folder and get it back via a resolved Promise.
 let browseCur="", browseParent="", browseHome="";
+let browseMode="config", browsePickResolve=null;
 function existingPaths(){ return new Set(readList("paths")); }
-function openBrowse(){ $("#browseBg").style.display="flex"; browseGo(""); }
-function closeBrowse(){ $("#browseBg").style.display="none"; }
+function openBrowse(){
+  browseMode="config"; browsePickResolve=null;
+  $("#browseTitle").textContent="Pick a folder";
+  $("#browseActionBtn").textContent="+ Add this folder";
+  $("#browseBg").style.display="flex"; browseGo("");
+}
+// Reuses the add-path folder browser to let the caller choose a single
+// destination directory. Resolves with the chosen path, or null if the
+// user closes the dialog without picking one.
+function pickFolder(title){
+  return new Promise(resolve=>{
+    browseMode="pick"; browsePickResolve=resolve;
+    $("#browseTitle").textContent=title||"Pick a folder";
+    $("#browseActionBtn").textContent="Choose this folder";
+    $("#browseBg").style.display="flex"; browseGo("");
+  });
+}
+function closeBrowse(){
+  $("#browseBg").style.display="none";
+  if(browseMode==="pick" && browsePickResolve){ const res=browsePickResolve; browsePickResolve=null; res(null); }
+}
 function browseUp(){ if(browseParent) browseGo(browseParent); }
 function browseTo(p){ browseGo(p); }
 async function browseGo(path){
@@ -230,10 +254,15 @@ async function browseGo(path){
     if(!r.ok){ $("#mlist").innerHTML='<div class="sub" style="padding:12px">'+(d.error||"can\'t read folder")+'</div>'; return; }
     browseCur=d.path; browseParent=d.parent||""; browseHome=d.home||"";
     $("#crumb").value=d.path; $("#mcur").textContent=d.path;
-    const have=existingPaths();
+    const have=browseMode==="pick"?null:existingPaths();
     const rows=(d.entries||[]).map(e=>{
+      const nav=`onclick="browseGo('${e.path.replace(/'/g,"\\'")}')"`;
+      const label=`<span ${nav} style="flex:1;display:flex;gap:8px;align-items:center;overflow:hidden">📁 <span class="nm">${e.name}</span></span>`;
+      if(browseMode==="pick"){
+        return `<div class="ditem">${label}<button class="addbtn" onclick="choosePath('${e.path.replace(/'/g,"\\'")}')">Choose</button></div>`;
+      }
       const added=have.has(e.path);
-      return `<div class="ditem"><span onclick="browseGo('${e.path.replace(/'/g,"\\'")}')" style="flex:1;display:flex;gap:8px;align-items:center;overflow:hidden">📁 <span class="nm">${e.name}</span></span>`+
+      return `<div class="ditem">${label}`+
         (added?'<span class="sub">added ✓</span>':`<button class="addbtn" onclick="addPath('${e.path.replace(/'/g,"\\'")}')">+ Add</button>`)+`</div>`;
     }).join("");
     $("#mlist").innerHTML = rows || '<div class="sub" style="padding:12px">no subfolders here</div>';
@@ -247,7 +276,15 @@ function addPath(p){
   browseGo(browseCur); // refresh "added ✓" markers
   $("#msg").textContent="added "+p; setTimeout(()=>$("#msg").textContent="",2000);
 }
-function addCurrent(){ addPath(browseCur); }
+// Resolves the pending pickFolder() promise with the chosen path and closes
+// the modal (without re-resolving via closeBrowse's cancel path).
+function choosePath(p){
+  if(!browsePickResolve) return;
+  const res=browsePickResolve; browsePickResolve=null;
+  $("#browseBg").style.display="none";
+  res(p);
+}
+function addCurrent(){ browseMode==="pick" ? choosePath(browseCur) : addPath(browseCur); }
 
 async function load(){
   const c=await (await fetch("/api/config")).json();
@@ -292,7 +329,8 @@ function renderLive(live){
   $("#pbytes").textContent=hBytes(p.bytes_done)+" / "+hBytes(p.total_bytes);
   $("#pelapsed").textContent=hDur(p.seconds_elapsed);
   $("#peta").textContent=p.seconds_remaining>0?hDur(p.seconds_remaining):"—";
-  $("#runTitle").textContent=live.paused?"Running backup — paused":"Running backup";
+  const verb = (live.kind === "restore") ? "Restoring" : "Backing up";
+  $("#runTitle").textContent = verb + (live.paused ? " — paused" : "");
   $("#btnPause").style.display=live.paused?"none":"";
   $("#btnResume").style.display=live.paused?"":"none";
   // terminal: re-render when the feed changes. Compare a content signature, not
@@ -324,7 +362,7 @@ async function refresh(){
     running=!!live.running;
     if(wasRunning && !running) loadVersions(); // backup finished → refresh versions once
     const run=$("#run");
-    if(running){ run.textContent=live.paused?"paused":"backing up…"; run.className="badge b-run"; }
+    if(running){ run.textContent=live.paused?"paused":((live.kind==="restore")?"restoring…":"backing up…"); run.className="badge b-run"; }
     else { run.textContent="idle"; run.className="badge b-idle"; }
     $("#now").disabled=running;
     renderLive(live);
@@ -375,11 +413,32 @@ function renderVersions(){
     return `<div class="vrow" ${sel}>
       <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
       <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
+      <button class="mini act" onclick="startRestore('${s.short_id}')">Restore…</button>
       <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
     </div>`;
   }).join("");
 }
 async function browseVersion(id){ bSnap=id; bDir="/"; renderVersions(); await browseSnap("/"); }
+// Restore a whole version: pick a destination via the shared folder-browser
+// modal (pickFolder), or fall back to an explicit in-place confirm if the
+// user declines to choose a folder.
+async function startRestore(id){
+  const dest = await pickFolder("Choose a destination folder to restore into");
+  if(dest === null){
+    if(!confirm("Restore version "+id+" IN PLACE, overwriting the original files?\nThis replaces current files with the backed-up versions.")) return;
+    return sendRestore(id, "", "inplace");
+  }
+  return sendRestore(id, dest, "folder");
+}
+async function sendRestore(id, target, mode){
+  $("#msg").textContent="starting restore…";
+  const r = await fetch("/api/restore", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({id:id, target:target, mode:mode})});
+  const j = await r.json();
+  $("#msg").textContent = r.ok ? "restore started" : ("error: "+(j.error||r.status));
+  if(!r.ok) alert("restore error: "+(j.error||r.status));
+  setTimeout(refresh,600); // progress then shows in the running panel
+}
 async function browseSnap(dir){
   bDir=dir;
   const r=await fetch("/api/ls?id="+encodeURIComponent(bSnap)+"&path="+encodeURIComponent(dir));
