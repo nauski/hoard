@@ -286,9 +286,13 @@ type RestoreHooks struct {
 	OnStart    func(*os.Process)
 }
 
-// Restore restores snapID (optionally only subpath) into target. overwrite is
-// one of always|if-changed|if-newer|never. If verify is set, restic re-reads
-// restored files and checks their content against the repo. Cancel via ctx.
+// Restore restores snapID (optionally only subpath) into target. subpath, if
+// set, is applied via restic's --include, so it matches either a single file
+// or a directory subtree (the "id:subpath" spec form only supports
+// directories and hard-errors on a file path, so we don't use it). overwrite
+// is one of always|if-changed|if-newer|never. If verify is set, restic
+// re-reads restored files and checks their content against the repo. Cancel
+// via ctx.
 func (c *Client) Restore(ctx context.Context, snapID, subpath, target, overwrite string, verify bool, hooks RestoreHooks) (*RestoreResult, string, error) {
 	if target == "" {
 		return nil, "", fmt.Errorf("no restore target")
@@ -296,13 +300,12 @@ func (c *Client) Restore(ctx context.Context, snapID, subpath, target, overwrite
 	if overwrite == "" {
 		overwrite = "always"
 	}
-	spec := snapID
-	if subpath != "" {
-		spec = snapID + ":" + subpath
-	}
 	// restic restore needs --verbose=2 (unlike backup, where a single
 	// --verbose suffices) to emit per-file verbose_status events.
-	args := []string{"restore", spec, "--target", target, "--overwrite", overwrite, "--json", "--verbose=2"}
+	args := []string{"restore", snapID, "--target", target, "--overwrite", overwrite, "--json", "--verbose=2"}
+	if subpath != "" {
+		args = append(args, "--include", subpath)
+	}
 	if verify {
 		args = append(args, "--verify")
 	}

@@ -99,6 +99,44 @@ func TestRestoreSubpath(t *testing.T) {
 	}
 }
 
+// TestRestoreSingleFile covers the case the old "id:subpath" spec form
+// couldn't handle: a subpath that points at a single FILE, not a directory.
+// restic hard-errors ("not a directory") on that spec form; --include does not.
+func TestRestoreSingleFile(t *testing.T) {
+	c, fixtures := newTestRepo(t)
+	ctx := context.Background()
+	target := t.TempDir()
+	hello := filepath.Join(fixtures, "hello.txt")
+	if _, _, err := c.Restore(ctx, "latest", hello, target, "always", false, RestoreHooks{}); err != nil {
+		t.Fatalf("restore single file: %v", err)
+	}
+	var sawNested, sawHello bool
+	var helloContents string
+	filepath.Walk(target, func(p string, info os.FileInfo, _ error) error {
+		if info == nil {
+			return nil
+		}
+		if info.Name() == "nested.txt" {
+			sawNested = true
+		}
+		if info.Name() == "hello.txt" {
+			sawHello = true
+			b, _ := os.ReadFile(p)
+			helloContents = string(b)
+		}
+		return nil
+	})
+	if !sawHello {
+		t.Fatal("single-file restore missing hello.txt")
+	}
+	if helloContents != "hello world" {
+		t.Fatalf("hello.txt restored with wrong contents: %q", helloContents)
+	}
+	if sawNested {
+		t.Fatal("single-file restore should not include nested.txt")
+	}
+}
+
 func TestRestoreActivityHook(t *testing.T) {
 	c, _ := newTestRepo(t)
 	ctx := context.Background()
