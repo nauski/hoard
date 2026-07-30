@@ -292,3 +292,42 @@ func TestStatsModes(t *testing.T) {
 		t.Fatalf("logical %d < stored %d; modes may not be working correctly", logical.TotalSize, stored.TotalSize)
 	}
 }
+
+func TestDiff(t *testing.T) {
+	c, fixtures := newTestRepo(t)
+	ctx := context.Background()
+	first, _ := c.Snapshots(ctx)
+	// add a file and back up again
+	if err := os.WriteFile(filepath.Join(fixtures, "added.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Backup(ctx, []string{fixtures}, nil, "testhost", nil, BackupHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := c.Snapshots(ctx)
+	// newest first? use the two distinct ids
+	var a, b string
+	a = first[0].ShortID
+	for _, s := range all {
+		if s.ShortID != a {
+			b = s.ShortID
+			break
+		}
+	}
+	d, err := c.Diff(ctx, a, b)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if d.Added < 1 {
+		t.Fatalf("expected >=1 added, got %+v", d)
+	}
+	var sawAdded bool
+	for _, ch := range d.Changes {
+		if strings.Contains(ch.Path, "added.txt") && ch.Modifier == "+" {
+			sawAdded = true
+		}
+	}
+	if !sawAdded {
+		t.Fatalf("added.txt not in changes: %+v", d.Changes)
+	}
+}
