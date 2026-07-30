@@ -409,26 +409,54 @@ func (c *Client) Check(ctx context.Context, readDataSubset string) (string, erro
 	return string(out), err
 }
 
+// retentionArgs builds the --keep-* flags for a retention policy.
+func retentionArgs(r config.Retention) []string {
+	var a []string
+	if r.Last > 0 {
+		a = append(a, "--keep-last", itoa(r.Last))
+	}
+	if r.Daily > 0 {
+		a = append(a, "--keep-daily", itoa(r.Daily))
+	}
+	if r.Weekly > 0 {
+		a = append(a, "--keep-weekly", itoa(r.Weekly))
+	}
+	if r.Monthly > 0 {
+		a = append(a, "--keep-monthly", itoa(r.Monthly))
+	}
+	if r.Yearly > 0 {
+		a = append(a, "--keep-yearly", itoa(r.Yearly))
+	}
+	return a
+}
+
 // ForgetPrune applies a retention policy and prunes unreferenced data.
 func (c *Client) ForgetPrune(ctx context.Context, r config.Retention) (string, error) {
 	args := []string{"forget", "--prune"}
-	if r.Last > 0 {
-		args = append(args, "--keep-last", itoa(r.Last))
-	}
-	if r.Daily > 0 {
-		args = append(args, "--keep-daily", itoa(r.Daily))
-	}
-	if r.Weekly > 0 {
-		args = append(args, "--keep-weekly", itoa(r.Weekly))
-	}
-	if r.Monthly > 0 {
-		args = append(args, "--keep-monthly", itoa(r.Monthly))
-	}
-	if r.Yearly > 0 {
-		args = append(args, "--keep-yearly", itoa(r.Yearly))
-	}
+	args = append(args, retentionArgs(r)...)
 	out, err := c.run(ctx, args...)
 	return string(out), err
+}
+
+// ForgetDryRun reports which snapshots the retention policy WOULD forget,
+// without touching the repo (--dry-run). Read-only.
+func (c *Client) ForgetDryRun(ctx context.Context, r config.Retention) ([]Snapshot, error) {
+	args := append([]string{"forget", "--dry-run", "--json"}, retentionArgs(r)...)
+	out, err := c.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	var groups []struct {
+		Remove []Snapshot `json:"remove"`
+	}
+	if err := json.Unmarshal(out, &groups); err != nil {
+		return nil, fmt.Errorf("parse forget: %w", err)
+	}
+	var rm []Snapshot
+	for _, g := range groups {
+		rm = append(rm, g.Remove...)
+	}
+	return rm, nil
 }
 
 // Stats returns the repo's restore-size stats as raw JSON for the dashboard.

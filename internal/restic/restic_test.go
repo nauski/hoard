@@ -231,3 +231,24 @@ func TestListFiles(t *testing.T) {
 		t.Fatalf("expected hello.txt and nested.txt, got %v", names)
 	}
 }
+
+func TestForgetDryRun(t *testing.T) {
+	c, fixtures := newTestRepo(t)
+	ctx := context.Background()
+	// A second snapshot so keep_last:1 would forget the first.
+	if _, _, err := c.Backup(ctx, []string{fixtures}, nil, "testhost", nil, BackupHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	rm, err := c.ForgetDryRun(ctx, config.Retention{Last: 1})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if len(rm) != 1 {
+		t.Fatalf("expected 1 snapshot to be forgotten, got %d", len(rm))
+	}
+	// Dry-run must NOT have deleted anything.
+	all, _ := c.Snapshots(ctx)
+	if len(all) != 2 {
+		t.Fatalf("dry-run deleted snapshots! now have %d", len(all))
+	}
+}

@@ -32,3 +32,15 @@ func TestColdLimitsRoundTrip(t *testing.T) {
 		t.Fatalf("limits not in config view: %s", w.Body.String())
 	}
 }
+
+func TestHandleRetentionPreview_BadBody(t *testing.T) {
+	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"}}, "")
+	st, _ := state.Load("")
+	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
+
+	w := httptest.NewRecorder()
+	srv.handleRetentionPreview(w, httptest.NewRequest(http.MethodPost, "/api/config/retention-preview", strings.NewReader("not json")))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad body, got %d: %s", w.Code, w.Body.String())
+	}
+}
