@@ -41,6 +41,7 @@
   th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase}
   .sub{color:var(--muted);font-size:12px} .mono{font-family:ui-monospace,monospace}
   .grid2{display:grid;grid-template-columns:1fr 160px;gap:16px}
+  .check{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px;cursor:pointer}
   .msg{font-size:12px;margin-top:8px}
   .foot{color:var(--muted);font-size:12px;text-align:center;padding-bottom:24px;margin-top:20px}
   .progress{margin-top:4px}
@@ -164,6 +165,7 @@
         <input id="limDown" type="number" min="0" placeholder="0" />
       </div>
     </div>
+    <label class="check"><input id="notify" type="checkbox" checked /> Desktop notifications when a backup finishes<span class="help" tabindex="0" data-tip="Show a system notification when a backup completes or fails. Needs a desktop session.">ⓘ</span></label>
   </div>
 
   <div class="card">
@@ -358,13 +360,15 @@ async function load(){
   $("#repo").value=c.repository||""; $("#pwfile").value=c.password_file||"";
   $("#sched").value=c.schedule||""; $("#host").textContent=c.host||"—";
   $("#limUp").value=c.limit_upload_kibps||0; $("#limDown").value=c.limit_download_kibps||0;
+  $("#notify").checked = c.notify_desktop !== false;
   $("#paths").innerHTML=""; (c.paths||[]).forEach(p=>addRow("paths",p)); if(!(c.paths||[]).length) addRow("paths","");
   $("#excludes").innerHTML=""; (c.excludes||[]).forEach(e=>addRow("excludes",e)); if(!(c.excludes||[]).length) addRow("excludes","");
 }
 async function save(){
   const body={ repository:$("#repo").value.trim(), password_file:$("#pwfile").value.trim(),
     schedule:$("#sched").value.trim(), paths:readList("paths"), excludes:readList("excludes"),
-    limit_upload_kibps:(parseInt($("#limUp").value,10)||0), limit_download_kibps:(parseInt($("#limDown").value,10)||0) };
+    limit_upload_kibps:(parseInt($("#limUp").value,10)||0), limit_download_kibps:(parseInt($("#limDown").value,10)||0),
+    notify_desktop: $("#notify").checked };
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   $("#smsg").textContent = r.ok ? "saved ✓" : "save failed";
   setTimeout(()=>$("#smsg").textContent="",2500);
