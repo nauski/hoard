@@ -9,9 +9,10 @@ with an embedded web UI, sitting in front of [restic](https://restic.net) and
 
 Machines back up to the server; the server consolidates everything into a local
 (**hot**) repository, mirrors it offsite to IDrive e2 (**cold**) on a schedule,
-verifies integrity, enforces retention, lets you **browse and clean up** what's
-stored, and **alerts you the moment a client goes stale or a job fails** — so a
-backup can never quietly rot for months.
+verifies both integrity **and that backups actually restore**, enforces retention,
+lets you **browse, restore, and clean up** what's stored, and **alerts you — by
+webhook or email — the moment a client goes stale or a job fails** — so a backup
+can never quietly rot for months.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-server-dashboard-dark.png">
@@ -63,32 +64,59 @@ backup can never quietly rot for months.
 
 ## Features
 
-- **Two web dashboards** — a server dashboard for the whole fleet and a per-machine
-  agent GUI. No config files to hand-edit for day-to-day use.
-- **Live running-backup view** — watch a backup as it runs: progress bar with
-  percentage, files/bytes, elapsed, and ETA, plus a **terminal-style feed of every
-  file** as it's processed. The server aggregates this **across all clients** in
-  one place.
-- **Pause, resume, cancel** — control any running backup from the agent *or* the
+- **Two web dashboards** — a tabbed server dashboard for the whole fleet and a
+  per-machine agent GUI, each with contextual **ⓘ help tooltips** on the jargon.
+  No config files to hand-edit for day-to-day use.
+- **Restore, not just download** — restore a whole snapshot, a chosen folder, or a
+  single file to a destination you pick (or in place), with the same live progress
+  + terminal feed as a backup. Getting data *back* is the whole point.
+- **Verified restores ("fire drill")** — on a schedule the server restores a
+  *sampled* file, hashes it, and confirms the bytes actually come back; a headline
+  badge shows how long ago that last succeeded. `restic check` proves structure —
+  this proves recovery.
+- **Recovery kit** — one-click download of a plain-text file with your repo URLs,
+  passwords, and copy-paste `restic restore` commands, so you can recover with
+  stock restic even if hoard is gone. A first-run gate nudges you to save it.
+- **Live running-backup view** — progress bar, files/bytes, elapsed, ETA, and a
+  terminal feed of every file as it's processed, **aggregated across all clients**
+  on the server.
+- **Live server jobs + cancel** — the offsite mirror, integrity check, and prune
+  each show a real packs-based progress bar, elapsed, ETA, a streaming terminal,
+  and a **Cancel** button (a cancelled copy is safe — restic copy is resumable).
+- **Pause, resume, cancel** any running client backup from the agent *or* the
   server, even though agents bind localhost-only (control rides the client's
   status reports back to it).
-- **Graphical folder picker** — choose what to back up by browsing your filesystem,
-  not by typing absolute paths.
-- **Backup browser** — pick a client → a version → browse its file tree → download
-  a file, or delete it. See exactly what's taking up space.
+- **Graphical folder picker** — choose what to back up by browsing, not by typing
+  absolute paths.
+- **Backup browser** — client → version → file tree → download, restore, or delete;
+  **diff** any version against the previous to see exactly what changed.
 - **Delete that actually frees space** — remove a file from one version or from
-  **all versions**, applied across *both* hot and e2, with a type-to-confirm guard
-  on the irreversible option.
-- **Staleness & failure alerts** — a webhook fires the moment a client stops
-  backing up or a job fails, so silent rot is impossible.
+  **all versions**, across *both* hot and e2, with a type-to-confirm guard — and a
+  **retention preview** that dry-runs exactly which snapshots a policy would forget
+  before you apply it.
+- **Staleness & failure alerts** — webhook **or email (SMTP)**, when a client goes
+  stale *or* its backups fail N times in a row (configurable threshold), plus a
+  manual retry.
+- **Bandwidth caps** — throttle transfer speed (KiB/s) on both the agent's push and
+  the server's offsite mirror, so a first sync doesn't saturate your uplink.
+- **Storage forecast** — projects where your repo size is heading from its recent
+  growth trend ("~58 GiB by Oct 29").
+- **Savings & freshness at a glance** — "120 GB logical → 78 GB stored, 35% saved",
+  and per-client green/amber/red freshness chips.
+- **One-command client enrollment** — the server mints a short-lived, single-use
+  token; `hoard-agent -enroll <token> -enroll-server <url>` auto-configures a new
+  machine (repo URL + password), no hand-managed secrets.
+- **Desktop notifications** — the agent pops a native toast when a backup completes
+  or fails, so you don't have to open the GUI.
 - **Scheduled mirror / retention / integrity check** — nightly offsite copy,
   `restic forget --prune`, and periodic `restic check` with data re-reads.
 
 ## The backup browser
 
 Open the server dashboard, pick a **client**, then a **version**, and walk its
-file tree. Download any file, or delete one — from just that version, or from
-**every** version to reclaim the space for good.
+file tree. Download any file, **restore** a file/folder/whole snapshot to a chosen
+destination, **diff** a version against the previous one, or delete a file — from
+just that version, or from **every** version to reclaim the space for good.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-server-browser-dark.png">
@@ -132,6 +160,11 @@ The server rolls this up for the **whole fleet** — one panel per client curren
 backing up, each with the same live feed and controls. Pause or cancel a remote
 client's backup right from here. Since agents bind localhost-only, control travels
 back on the status reports each agent already sends the server every second.
+
+The server's **own** jobs get the same visibility: kick off a mirror to e2 or an
+integrity check and you get a live **packs-based progress bar, elapsed, ETA, a
+streaming restic terminal, and a Cancel button** — no more staring at a bare
+spinner wondering whether a 30 GB offsite copy is halfway done or stuck.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-running-server-dark.png">
@@ -195,6 +228,13 @@ services.hoard-agent = {
 The GUI opens at `http://127.0.0.1:7420`; the server URL and password are pinned
 declaratively, while paths/excludes/schedule live in the GUI.
 
+> **One-command enrollment (no sops dance).** On the server dashboard, click
+> **Generate enrollment token**, then on the new machine run the command it shows:
+> `hoard-agent -enroll <token> -enroll-server http://server:8080`. The agent
+> redeems the single-use, 15-minute token, writes its repo URL + password, and is
+> ready to back up — handy for a quick or non-declarative host. (Convenience on a
+> trusted LAN, not an auth boundary — see the security note.)
+
 **Option B: plain restic.** The agent is optional — any restic works:
 
 ```sh
@@ -218,14 +258,25 @@ All fields are in `config.example.json`. Highlights:
 
 - `schedule.mirror` / `schedule.check` — `"HH:MM"` local times (empty = disabled).
 - `schedule.check_weekday` — `0`–`6` (Sun–Sat) to make the integrity check weekly.
+- `schedule.verify` — `"HH:MM"` for the restore fire-drill (empty = disabled).
 - `schedule.stale_after` — e.g. `"26h"`; a client with no newer snapshot is flagged
   and (if `alert.on_stale`) triggers a one-shot alert on the transition to stale.
-- `retention.keep_*` — passed straight to `restic forget --prune` on the cold repo.
+- `retention.keep_*` — passed straight to `restic forget --prune` on the cold repo;
+  the dashboard's **retention preview** dry-runs the effect before you save.
+- `cold.limit_upload_kibps` / `limit_download_kibps` — transfer caps in KiB/s for
+  the offsite mirror (`0` = unlimited); each agent has the same knobs for its push.
 - `alert.webhook_url` — a JSON POST target. The payload carries `title`, `content`,
   and `text` keys, covering ntfy, Discord-compatible relays, and most others.
+- `alert.on_failure` / `alert.failure_threshold` — also alert when a client's
+  backups fail this many times in a row.
+- `smtp.host` / `port` / `username` / `from` / `to` — email alert channel alongside
+  the webhook (the SMTP password is write-only: set via env or the GUI, never read
+  back).
 
 Secrets can always be supplied by env (`HOARD_*` for the server, `HOARD_AGENT_*`
-for the agent), which takes precedence over the file.
+for the agent), which takes precedence over the file. Repo passwords and the SMTP
+password are **write-only** in the dashboards — the API returns only whether each
+is set, never the value.
 
 ## HTTP API
 
@@ -233,23 +284,35 @@ for the agent), which takes precedence over the file.
 
 | Method + path | Purpose |
 |---|---|
-| `GET /api/status` | Running job, per-client freshness, last result per job. |
+| `GET /api/status` | Running job + **live server-job view** (progress/tail), per-client freshness, verify badge, last result per job. |
+| `GET /api/stats` | Repo sizes — logical vs stored (dedup/compression savings). |
+| `GET /api/forecast` | Projected repo-size growth from recorded samples. |
 | `GET /api/snapshots` | Live `restic snapshots` from the hot repo. |
-| `GET /api/history` | Recent job results (mirror/check/prune/purge). |
-| `POST /api/actions/mirror` | Trigger a hot→cold mirror now (202, or 409 if busy). |
-| `POST /api/actions/check` | Trigger an integrity check now. |
+| `GET /api/history` | Recent job results (mirror/check/prune/purge/…). |
 | `GET /api/ls?id=&path=` | List one directory level inside a snapshot. |
+| `GET /api/diff?id=&parent=` | What changed between a version and the previous. |
 | `GET /api/download?id=&path=` | Stream a file from a snapshot. |
-| `POST /api/purge` | Remove a path from one version (`version`) or all versions of a `host`, across hot + cold. |
+| `GET /api/recovery-kit` | Download the plain-text recovery kit. |
+| `POST /api/restore` | Restore a snapshot / path to a destination. |
+| `POST /api/actions/mirror` · `check` | Trigger a mirror or integrity check now (202, or 409 if busy). |
+| `POST /api/actions/cancel` | Cancel the running server job (409 if idle). |
+| `POST /api/purge` | Remove a path from one version or all versions of a `host`, across hot + cold. |
 | `POST /api/delete-version` | Delete one whole snapshot (hot + e2 twin). |
+| `GET/POST /api/config` (+ `/config/{retention-preview,test-cold,init-cold,test-email,ack-kit}`) | Read/update settings; preview retention; test/init offsite; send a test email; ack the recovery kit. |
+| `POST /api/enroll/mint` · `redeem` | Mint / redeem a single-use client enrollment token. |
+| `POST /api/clients/control` · `GET /api/running` | Pause/resume/cancel a client's backup; live cross-client running view. |
 | `GET /healthz` | Liveness. |
 
 **Agent (`hoard-agent`)** — `GET/POST /api/config`, `GET /api/status` (with live
-progress), `POST /api/backup`, `GET /api/browse` (folder picker), plus `ls` /
-`download` (local) and `purge` / `delete-version` (delegated to the server).
+progress), `POST /api/backup`, `POST /api/restore`, `GET /api/browse` (folder
+picker), plus `ls` / `download` (local) and `purge` / `delete-version` (delegated
+to the server). A native desktop toast fires on backup completion/failure, and
+`hoard-agent -enroll <token> -enroll-server <url>` redeems an enrollment token to
+self-configure.
 
 Only one restic operation runs at a time on the server; triggers return `409`
-while busy.
+while busy, and a running mirror/check/prune can be stopped with
+`POST /api/actions/cancel`.
 
 ## Build & develop
 
@@ -269,18 +332,25 @@ step, no node_modules. No external Go modules, so the flake's `vendorHash` is
 hoard is built for a trusted LAN. The rest-server (`:8000`), the server dashboard
 (`:8080`), and the agent GUI (`:7420`) are **unauthenticated**, and the browse /
 download / delete endpoints expose backup contents and can permanently destroy
-data. The agent's browse endpoint also lists the local filesystem as the running
-user. Keep these bound to your LAN/localhost. Before exposing anything, add a
+data. The recovery-kit and enrollment-redeem endpoints hand out the repo password
+to anyone who can reach the open API — enrollment tokens add single-use + expiry
+on top, but on the open API they're a convenience, not an auth boundary. The
+agent's browse endpoint also lists the local filesystem as the running user. Keep
+these bound to your LAN/localhost. Before exposing anything, add a
 reverse proxy with auth and give rest-server a `.htpasswd`
 (`HOARD_REST_OPTS=""` + a mounted credentials file, then
 `rest:http://user:pass@server:8000/hot`).
 
 ## Status
 
-The core loop (push → mirror → prune → check → freshness/alerts → dashboard),
-the agent (GUI, live progress, folder picker), and the backup browser
-(browse / download / delete one or all versions across both repos) are
-implemented and verified end-to-end against a live TrueNAS + IDrive e2 setup.
+The core loop (push → mirror → prune → check → freshness/alerts → dashboard), the
+agent (GUI, live progress, folder picker, desktop notifications), the backup
+browser (browse / diff / download / **restore** / delete one or all versions
+across both repos), **restore fire-drill verification**, the **recovery kit**,
+webhook **and email** alerting with a failure threshold, **bandwidth caps**,
+**storage forecast**, **one-command client enrollment**, and **live + cancelable
+server jobs** are all implemented and verified end-to-end against a live TrueNAS +
+IDrive e2 setup.
 
 Roadmap: authentication, per-client retention, Prometheus `/metrics`, and a
 NixOS module for running the server on non-container hosts.
