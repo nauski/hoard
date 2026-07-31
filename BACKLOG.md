@@ -30,7 +30,7 @@ The single real gap. Today you can browse and download individual files, but
 there is no whole-folder / whole-snapshot restore, and nothing proves the backups
 actually come back. For a backup tool this is the point.
 
-- [ ] **Restore flow**
+- [x] **Restore flow**
   - **What**: pick a version (or a folder/path within it), pick a target
     destination, and run `restic restore`. Reuse the existing live-progress +
     terminal panel for feedback. Agent restores to a local path; server can
@@ -44,7 +44,7 @@ actually come back. For a backup tool this is the point.
     existing files (restic `--overwrite` policy — default to a safe mode + explicit
     opt-in). Confirm destination has room.
 
-- [ ] **Automated restore verification ("fire drill")**
+- [x] **Automated restore verification ("fire drill")**
   - **What**: on a schedule, restore a *sampled* file from the latest snapshot to a
     temp dir, hash it, confirm it matches, then delete the temp copy. Surface a
     headline badge: **"Last verified restore: 2h ago ✓"** (red if overdue/failed).
@@ -59,7 +59,7 @@ actually come back. For a backup tool this is the point.
 
 ## P1 — Close real risks
 
-- [ ] **Recovery kit (anti–lock-out)**
+- [x] **Recovery kit (anti–lock-out)**
   - **What**: one-click "Download recovery kit" — a plain file containing the repo
     URL, repo password, and copy-paste `restic restore` instructions. First-run
     gate on storage settings: "I've saved my recovery kit somewhere safe ☑".
@@ -70,7 +70,7 @@ actually come back. For a backup tool this is the point.
     Never email/transmit it — download only. Consider a "password set on <date>,
     kit downloaded?" indicator in Settings.
 
-- [ ] **Auto-retry + suspend awareness**
+- [x] **Auto-retry + suspend awareness**
   - **What**: if a backup run fails, auto-retry once (backoff) before marking it
     failed. Optionally a systemd `sleep.target` hook so suspend cleanly
     pauses/resumes the running backup instead of risking a failed run.
@@ -81,7 +81,7 @@ actually come back. For a backup tool this is the point.
     cancel). Sleep hook: a small `systemd-sleep` script or `inhibit`/signal that
     calls the agent's existing pause/resume.
 
-- [ ] **Bandwidth throttle for the offsite mirror**
+- [x] **Bandwidth throttle for the offsite mirror**
   - **What**: editable upload cap for `restic copy` (`--limit-upload`) in server
     Settings.
   - **Why**: a 200 GB first mirror saturates a home uplink for hours; capping (or
@@ -89,7 +89,7 @@ actually come back. For a backup tool this is the point.
   - **Notes**: add to `config.Schedule`/a new bandwidth field; thread into the
     scheduler's copy invocation.
 
-- [ ] **Email alerts (SMTP)**
+- [x] **Email alerts (SMTP)**
   - **What**: SMTP alert channel alongside the existing webhook.
   - **Why**: "this client hasn't backed up in 3 days" should actually reach you.
   - **Notes**: extend `config.Alert` + the `Notify` path in `internal/api`.
@@ -98,16 +98,16 @@ actually come back. For a backup tool this is the point.
 
 ## P2 — UX polish (high value / low cost)
 
-- [ ] **Client freshness chips** — promote "last successful backup: 3h ago" to a
+- [x] **Client freshness chips** — promote "last successful backup: 3h ago" to a
   colored status chip per client (green/amber/red vs `StaleAfter`). Makes the
   dashboard answer "is everything protected?" at a glance.
-- [ ] **Version diff** — in the browser, "what changed since the previous version"
+- [x] **Version diff** — in the browser, "what changed since the previous version"
   via `restic diff` (added/removed/changed). Makes the version list meaningful
   instead of bare timestamps.
-- [ ] **Retention preview** — before saving a retention policy, dry-run and show
+- [x] **Retention preview** — before saving a retention policy, dry-run and show
   "this would forget N snapshots (these)". No blind destructive changes.
   (`restic forget --dry-run`.)
-- [ ] **Dedup/savings stat** — one line: "120 GB logical → 78 GB stored, 35% saved".
+- [x] **Dedup/savings stat** — one line: "120 GB logical → 78 GB stored, 35% saved".
   Data is already available from `restic stats` modes.
 
 ---
