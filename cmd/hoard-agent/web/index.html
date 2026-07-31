@@ -51,8 +51,15 @@
   .pstats b{color:var(--fg);font-weight:600}
   .pcur{margin-top:6px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .vrow,.frow{display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid var(--line)}
+  .vrow{align-items:flex-start}
   .vrow:hover,.frow:hover{background:var(--sunken)}
-  .vrow .nm,.frow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* min-width:0 lets these flex items shrink so the ellipsis/wrap actually apply
+     instead of forcing the row wider than its container. */
+  .vrow .nm,.frow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vmeta{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+  .vhead{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .vpaths{white-space:normal;word-break:break-word;line-height:1.4}
+  .vacts{display:flex;flex-wrap:wrap;gap:6px;flex-shrink:0;justify-content:flex-end}
   .mini{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:500;cursor:pointer;text-decoration:none}
   .mini.danger{border-color:rgba(248,81,73,.5);color:var(--bad)} .mini.act{border-color:var(--accent);color:var(--accent)}
   .danger-text{color:var(--bad)}
@@ -507,11 +514,16 @@ function renderVersions(){
     const sz=s.summary?hBytes(s.summary.total_bytes_processed):"—";
     const added=s.summary&&s.summary.data_added?" <span class='sub'>(+"+hBytes(s.summary.data_added)+" new)</span>":"";
     return `<div class="vrow" ${sel}>
-      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span></span>
-      <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
-      <button class="mini act" onclick="startRestore('${s.short_id}')">Restore…</button>
-      <button class="mini danger" onclick="restoreInPlace('${s.short_id}')">Restore in place…</button>
-      <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
+      <div class="vmeta">
+        <div class="vhead"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added}</div>
+        <div class="vpaths sub">${esc((s.paths||[]).join(", "))}</div>
+      </div>
+      <div class="vacts">
+        <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
+        <button class="mini act" onclick="startRestore('${s.short_id}')">Restore…</button>
+        <button class="mini danger" onclick="restoreInPlace('${s.short_id}')">Restore in place…</button>
+        <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
+      </div>
     </div>`;
   }).join("");
 }
