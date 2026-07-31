@@ -20,6 +20,13 @@ type JobResult struct {
 	Output    string    `json:"output,omitempty"`
 }
 
+// SizeSample records a repo-size measurement at a point in time.
+type SizeSample struct {
+	At         time.Time `json:"at"`
+	HotStored  int64     `json:"hot_stored"`
+	ColdStored int64     `json:"cold_stored"`
+}
+
 // Outcome is the result of a client's most recent backup run (report-derived).
 // Kept separate from Client (which is rebuilt from snapshots each tick) so the
 // freshness refresh can't clobber it. ConsecutiveFailures is maintained server-side.
@@ -60,6 +67,7 @@ type Store struct {
 	LastByJob      map[string]JobResult `json:"last_by_job"`
 	ClientOutcomes map[string]Outcome   `json:"client_outcomes"`
 	LastVerify     *VerifyResult        `json:"last_verify,omitempty"`
+	SizeSamples    []SizeSample         `json:"size_samples,omitempty"`
 }
 
 // Load reads the store from path, or returns an empty one if it doesn't exist.
@@ -130,6 +138,37 @@ func (s *Store) SetVerify(r VerifyResult) {
 	defer s.mu.Unlock()
 	s.LastVerify = &r
 	s.save()
+}
+
+// AppendSizeSample records a repo-size sample, caps the series at 400 newest,
+// and persists.
+func (s *Store) AppendSizeSample(sample SizeSample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SizeSamples = append(s.SizeSamples, sample)
+	if len(s.SizeSamples) > 400 {
+		s.SizeSamples = s.SizeSamples[len(s.SizeSamples)-400:]
+	}
+	s.save()
+}
+
+// SizeSamplesSnapshot returns a copy of the size series under lock.
+func (s *Store) SizeSamplesSnapshot() []SizeSample {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SizeSample, len(s.SizeSamples))
+	copy(out, s.SizeSamples)
+	return out
+}
+
+// LastSizeSampleAt returns the timestamp of the newest sample (zero if none).
+func (s *Store) LastSizeSampleAt() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.SizeSamples) == 0 {
+		return time.Time{}
+	}
+	return s.SizeSamples[len(s.SizeSamples)-1].At
 }
 
 // View is a lock-free, read-only copy of the store for handlers to consume.

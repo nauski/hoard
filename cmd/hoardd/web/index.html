@@ -102,6 +102,11 @@
 <section class="tab" id="tab-overview">
   <div class="row" id="jobCards"></div>
 
+  <div class="card">
+    <h2>Storage forecast<span class="help" tabindex="0" data-tip="Projects where your repo size is heading from its recent growth trend. Needs a few days of history to appear.">ⓘ</span></h2>
+    <div id="forecast" class="sub">Collecting data…</div>
+  </div>
+
   <div class="card" id="runningCard" style="display:none">
     <h2>Running backups</h2>
     <div id="runningList"></div>
@@ -542,9 +547,27 @@ async function loadStats(){
     if(st.hot){ $("#hotSize").textContent="· "+hBytes(st.hot.total_size); $("#hotSaved").textContent=savingsLine(st.hot); }
     if(st.cold){ $("#coldSize").textContent="· "+hBytes(st.cold.total_size); $("#coldSaved").textContent=savingsLine(st.cold); }
   }catch(e){}
+  loadForecast();
 }
 loadStats();
 setInterval(loadStats, 60000);
+
+// Storage forecast — projects hot/cold repo growth from recent daily samples.
+async function loadForecast(){
+  try{
+    const r = await fetch("/api/forecast"); const p = await r.json();
+    const el = document.getElementById("forecast");
+    if(!p.have_data){ el.textContent = "Collecting data — a projection appears after a few daily samples."; return; }
+    const line = (label, now, perDay, at90, at) => {
+      if(perDay <= 0) return `${label}: ${hBytes(now)} now · not growing`;
+      const when = new Date(at).toLocaleDateString(undefined,{month:"short",day:"numeric"});
+      return `${label}: ${hBytes(now)} now · +${hBytes(perDay*7)}/week · ~${hBytes(at90)} by ${when}`;
+    };
+    const rows = [ line("Hot", p.hot_stored, p.hot_per_day, p.hot_90d, p.projected_at) ];
+    if(p.cold_stored > 0 || p.cold_per_day > 0) rows.push(line("Cold (e2)", p.cold_stored, p.cold_per_day, p.cold_90d, p.projected_at));
+    el.innerHTML = rows.map(t=>`<div>${esc(t)}</div>`).join("");
+  }catch(e){ /* keep prior text */ }
+}
 
 // ---------------- Settings ----------------
 async function loadConfig(){
