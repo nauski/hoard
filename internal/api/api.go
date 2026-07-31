@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
+	"github.com/nauski/hoard/internal/forecast"
 	"github.com/nauski/hoard/internal/restic"
 	"github.com/nauski/hoard/internal/scheduler"
 	"github.com/nauski/hoard/internal/state"
@@ -66,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/actions/check", s.action("check"))
 	// Backup browser (reads the fast hot repo; deletes hit hot + cold).
 	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/forecast", s.handleForecast)
 	mux.HandleFunc("GET /api/ls", s.handleLs)
 	mux.HandleFunc("GET /api/diff", s.handleDiff)
 	mux.HandleFunc("GET /api/download", s.handleDownload)
@@ -201,6 +203,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	add("hot", s.hot())
 	add("cold", s.cold())
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleForecast projects repo-size growth 90 days out from recorded size
+// samples. Cheap (in-memory), so the UI can call it freely.
+func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
+	p := forecast.Project(s.store.SizeSamplesSnapshot(), 90*24*time.Hour, time.Now())
+	writeJSON(w, http.StatusOK, p)
 }
 
 // handleLs lists one directory level inside a snapshot (hot repo).
