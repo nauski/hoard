@@ -24,7 +24,7 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin:0 0 12px; }
   label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
-  input[type=text] { width:100%; background:var(--sunken); border:1px solid var(--line); border-radius:8px; color:var(--fg); padding:8px 10px; font-family:ui-monospace,monospace; font-size:13px; }
+  input[type=text], input[type=number] { width:100%; background:var(--sunken); border:1px solid var(--line); border-radius:8px; color:var(--fg); padding:8px 10px; font-family:ui-monospace,monospace; font-size:13px; }
   .list { display:flex; flex-direction:column; gap:6px; }
   .list .row { display:flex; gap:8px; }
   .list .row input { flex:1; }
@@ -440,12 +440,22 @@ async function refresh(){
     $("#now").disabled=running;
     renderLive(live);
     const lr=st.last_run;
-    const failed=!!(lr && lr.ok===false && !running && lr.message!=='cancelled');
+    // A run only counts if it actually happened this process lifetime (lastRun is
+    // in-memory, so it's the zero value 0001-01-01 right after a restart). Without
+    // this guard a never-run agent shows ok===false and reads as "Retry backup".
+    const ran = !!(lr && lr.started_at && !String(lr.started_at).startsWith("0001"));
+    const failed = ran && lr.ok===false && !running && lr.message!=='cancelled';
     $("#now").textContent = failed ? "Retry backup" : "Back up now";
-    if(lr && lr.started_at && !String(lr.started_at).startsWith("0001")){
+    if(ran){
       const b=lr.ok?'<span class="badge b-ok">ok</span>':'<span class="badge b-bad">failed</span>';
       const msgClass = failed ? "danger-text" : "mono";
       $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='"+msgClass+"'>"+esc(lr.message||"")+"</span>";
+    } else if(bSnaps && bSnaps.length){
+      // No backup this session — fall back to the newest snapshot already in the
+      // repo (bSnaps is sorted newest-first) so the card isn't misleadingly empty.
+      const s=bSnaps[0];
+      const sz=s.summary?" · "+hBytes(s.summary.total_bytes_processed):"";
+      $("#last").innerHTML='<span class="badge b-ok">ok</span> '+fmt(s.time)+sz+"<br><span class='sub'>most recent backup on the server (this session hasn't run one yet)</span>";
     }
   }catch(e){}
 }
