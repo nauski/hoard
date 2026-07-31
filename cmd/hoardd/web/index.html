@@ -217,6 +217,11 @@
     <div class="sub" style="margin-top:6px">↳ "Test" and "Initialize" save the fields above first, so they always use exactly what you've typed. "Initialize repository" creates a fresh restic repo in an <b>empty</b> bucket (needed once when pointing at new storage); harmless if the repo already exists.</div>
     <div class="sub" style="margin-top:10px">Hot repo (local staging, deploy-time): <span class="mono" id="cfgHotRepo">—</span> · <span id="cfgSecrets"></span></div>
   </div>
+  <div class="card">
+    <h2>Enroll a client<span class="help" tabindex="0" data-tip="Creates a one-time, 15-minute token. Run the shown command on a new machine to auto-configure it — no manual repo URL or password needed.">ⓘ</span></h2>
+    <button class="secondary" onclick="mintEnroll()">Generate enrollment token</button>
+    <div id="enrollOut" class="sub" style="margin-top:10px"></div>
+  </div>
 </section>
 
   <div class="foot">hoard · auto-refreshes every 5s</div>
@@ -610,6 +615,17 @@ function downloadKit(){
 async function ackKit(){
   await fetch("/api/config/ack-kit",{method:"POST"});
   const b=$("#kitBanner"); if(b) b.style.display="none";
+}
+async function mintEnroll(){
+  const el = document.getElementById("enrollOut");
+  el.textContent = "generating…";
+  try{
+    const r = await fetch("/api/enroll/mint", {method:"POST"});
+    const j = await r.json();
+    if(!r.ok || !j.token){ el.textContent = "error: " + esc(String(j.error || r.status)); return; }
+    const cmd = "hoard-agent -enroll " + j.token + " -enroll-server " + location.origin;
+    el.innerHTML = "Run this on the new machine (expires in 15 min):<br><code style=\"user-select:all;word-break:break-all\">" + esc(cmd) + "</code>";
+  }catch(e){ el.textContent = "error generating token"; }
 }
 async function saveConfig(){
   const wd=$("#cfgWeekday").value.trim();
