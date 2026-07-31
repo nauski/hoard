@@ -451,11 +451,17 @@ async function refresh(){
       const msgClass = failed ? "danger-text" : "mono";
       $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='"+msgClass+"'>"+esc(lr.message||"")+"</span>";
     } else if(bSnaps && bSnaps.length){
-      // No backup this session — fall back to the newest snapshot already in the
-      // repo (bSnaps is sorted newest-first) so the card isn't misleadingly empty.
+      // No backup this session — fall back to the newest snapshot still in the
+      // repo (bSnaps is sorted newest-first, refreshed every 15s) so the card
+      // isn't misleadingly empty. Because it tracks the live list, a snapshot
+      // deleted elsewhere drops out here too (→ the else branch below).
       const s=bSnaps[0];
       const sz=s.summary?" · "+hBytes(s.summary.total_bytes_processed):"";
       $("#last").innerHTML='<span class="badge b-ok">ok</span> '+fmt(s.time)+sz+"<br><span class='sub'>most recent backup on the server (this session hasn't run one yet)</span>";
+    } else if(versionsLoaded){
+      // Genuinely nothing in the repo (and no run this session). Only shown once
+      // the version list has actually loaded, so it can't flash during startup.
+      $("#last").innerHTML='<span class="sub">No backups in the repo yet — run one to protect this machine.</span>';
     }
   }catch(e){}
 }
@@ -465,6 +471,9 @@ async function refresh(){
 async function loop(){ await refresh(); setTimeout(loop, running?1000:5000); }
 // ---------------- Backup browser ----------------
 let bSnaps=[], bSnap="", bDir="/", delCtx={}, bEntries=[];
+// True once /api/snapshots has answered at least once, so the Last-backup card
+// can distinguish "still loading" from a genuinely empty repo.
+let versionsLoaded=false;
 // short_ids optimistically deleted — filtered out of every reload until the
 // server confirms they're gone, so no refresh can resurrect a row.
 let pendingDel=new Set();
@@ -475,6 +484,7 @@ async function loadVersions(){
   catch(e){ if(!bSnaps.length) $("#bVersions").innerHTML='<div class="sub">can\'t reach server</div>'; return; }
   if(!Array.isArray(sn)) return; // transient (repo busy): keep current list
   bSnaps=sn.filter(s=>!pendingDel.has(s.short_id)).sort((a,b)=>new Date(b.time)-new Date(a.time));
+  versionsLoaded=true;
   renderVersions();
 }
 // Deletes are delegated to the server; poll the real list until the id is gone
