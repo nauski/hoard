@@ -30,6 +30,7 @@ type Server struct {
 	webFS     fs.FS
 	client    *http.Client
 	live      *liveStore
+	tokens    *tokenStore
 
 	restoreMu     sync.Mutex
 	restoreCancel context.CancelFunc // cancels the in-flight server restore, if any
@@ -41,6 +42,7 @@ func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store 
 		cfg: cfg, resticBin: resticBin, sched: sched, store: store, log: log, webFS: webFS,
 		client: &http.Client{Timeout: 10 * time.Second},
 		live:   newLiveStore(),
+		tokens: newTokenStore(),
 	}
 }
 
@@ -60,6 +62,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/config/retention-preview", s.handleRetentionPreview)
 	mux.HandleFunc("POST /api/config/test-email", s.handleTestEmail)
 	mux.HandleFunc("POST /api/config/ack-kit", s.handleAckKit)
+	mux.HandleFunc("POST /api/enroll/mint", s.handleEnrollMint)
+	mux.HandleFunc("POST /api/enroll/redeem", s.handleEnrollRedeem)
 	mux.HandleFunc("GET /api/recovery-kit", s.handleRecoveryKit)
 	mux.HandleFunc("GET /api/snapshots", s.handleSnapshots)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
