@@ -48,6 +48,12 @@ in {
       default = pkgs.restic;
       description = "restic package the agent shells out to.";
     };
+
+    notify = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.libnotify;
+      description = "Package providing notify-send for desktop notifications.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -66,8 +72,9 @@ in {
         Environment = [
           "HOARD_AGENT_REPOSITORY=${cfg.repository}"
           "HOARD_AGENT_PASSWORD_FILE=${cfg.passwordFile}"
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus"
         ] ++ lib.optional (cfg.host != "") "HOARD_AGENT_HOST=${cfg.host}";
-        ExecStart = "${lib.getExe cfg.package} -listen ${cfg.listen} -restic ${lib.getExe cfg.restic}";
+        ExecStart = "${lib.getExe cfg.package} -listen ${cfg.listen} -restic ${lib.getExe cfg.restic} -notify-send ${cfg.notify}/bin/notify-send";
         # "always" (not "on-failure") so the agent comes back even after a clean
         # kill; an explicit `systemctl --user stop` still stops it for good.
         Restart = "always";

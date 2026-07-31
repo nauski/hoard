@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -51,6 +52,9 @@ type Config struct {
 	// speed (KiB/s); 0 = unlimited.
 	LimitUploadKiBps   int `json:"limit_upload_kibps"`
 	LimitDownloadKiBps int `json:"limit_download_kibps"`
+	// NotifyDesktop controls whether desktop notifications are sent on backup completion.
+	// Defaults to enabled (nil or true).
+	NotifyDesktop *bool `json:"notify_desktop,omitempty"`
 }
 
 // Agent owns config persistence, the restic client, and run state.
@@ -60,6 +64,7 @@ type Agent struct {
 	cfgPath   string
 	log       *slog.Logger
 	resticBin string
+	notifyBin string
 
 	running  bool
 	lastRun  RunResult
@@ -207,11 +212,11 @@ type RunResult struct {
 }
 
 // Load reads the agent config from path (creating a default if absent).
-func Load(path, resticBin string, log *slog.Logger) (*Agent, error) {
+func Load(path, resticBin, notifyBin string, log *slog.Logger) (*Agent, error) {
 	if resticBin == "" {
 		resticBin = "restic"
 	}
-	a := &Agent{cfgPath: path, log: log, resticBin: resticBin}
+	a := &Agent{cfgPath: path, log: log, resticBin: resticBin, notifyBin: notifyBin}
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		host, _ := os.Hostname()
@@ -654,7 +659,24 @@ func (a *Agent) ScheduleTime() string { return a.GetConfig().Schedule }
 func (a *Agent) storeRun(rr RunResult) {
 	a.mu.Lock()
 	a.lastRun = rr
+	enabled, bin := a.cfg.NotifyEnabled(), a.notifyBin
 	a.mu.Unlock()
+	if enabled && bin != "" {
+		if args, ok := notifyArgs(rr); ok {
+			go a.sendNotify(bin, args)
+		}
+	}
+}
+
+// sendNotify runs the configured notify-send binary with args. Errors are
+// logged but never returned — a failed desktop notification must never
+// affect the backup result.
+func (a *Agent) sendNotify(bin string, args []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, bin, args...).Run(); err != nil {
+		a.log.Warn("desktop notification failed", "err", err)
+	}
 }
 
 func (a *Agent) persist() error {
@@ -681,4 +703,24 @@ func cleanList(in []string) []string {
 		}
 	}
 	return out
+}
+
+// NotifyEnabled reports whether desktop notifications are on (default on).
+func (c Config) NotifyEnabled() bool { return c.NotifyDesktop == nil || *c.NotifyDesktop }
+
+// notifyArgs builds notify-send arguments for a finished run, and reports whether
+// to send. Real backups only (not restores, not user-cancels); failures — including
+// pre-flight — send a critical toast.
+func notifyArgs(rr RunResult) (args []string, ok bool) {
+	if rr.Kind != "backup" {
+		return nil, false
+	}
+	if !rr.OK && rr.Message == "cancelled" {
+		return nil, false
+	}
+	title, urgency := "Backup complete", "normal"
+	if !rr.OK {
+		title, urgency = "Backup failed", "critical"
+	}
+	return []string{"-a", "hoard", "-u", urgency, "hoard: " + title, rr.Message}, true
 }

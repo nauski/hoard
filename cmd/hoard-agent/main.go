@@ -26,6 +26,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:7420", "address for the local GUI")
 	cfgPath := flag.String("config", defaultConfigPath(), "path to agent config JSON")
 	resticBin := flag.String("restic", "restic", "path to restic binary")
+	notifyBin := flag.String("notify-send", "", "path to notify-send for desktop notifications (empty = disabled)")
 	debug := flag.Bool("debug", false, "verbose logging")
 	flag.Parse()
 
@@ -35,7 +36,7 @@ func main() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	a, err := agent.Load(*cfgPath, *resticBin, log)
+	a, err := agent.Load(*cfgPath, *resticBin, *notifyBin, log)
 	if err != nil {
 		log.Error("load agent config", "err", err)
 		os.Exit(1)
