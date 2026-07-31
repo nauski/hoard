@@ -28,6 +28,8 @@ func main() {
 	resticBin := flag.String("restic", "restic", "path to restic binary")
 	notifyBin := flag.String("notify-send", "", "path to notify-send for desktop notifications (empty = disabled)")
 	debug := flag.Bool("debug", false, "verbose logging")
+	enrollTok := flag.String("enroll", "", "redeem an enrollment token, then exit")
+	enrollSrv := flag.String("enroll-server", "", "hoard server URL for -enroll (e.g. http://truenas:8080)")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -40,6 +42,19 @@ func main() {
 	if err != nil {
 		log.Error("load agent config", "err", err)
 		os.Exit(1)
+	}
+
+	if *enrollTok != "" {
+		if *enrollSrv == "" {
+			log.Error("-enroll requires -enroll-server")
+			os.Exit(2)
+		}
+		if err := a.Enroll(context.Background(), *enrollSrv, *enrollTok); err != nil {
+			log.Error("enrollment failed", "err", err)
+			os.Exit(1)
+		}
+		log.Info("enrolled — configuration written; start the agent normally to back up")
+		os.Exit(0)
 	}
 
 	sub, err := fs.Sub(webFiles, "web")

@@ -411,6 +411,58 @@ func (a *Agent) SetConfig(c Config) error {
 	return a.persist()
 }
 
+// Enroll redeems a token against the hoard server and writes the returned repo
+// URL, password (to a 0600 file next to the config), and server URL into config.
+func (a *Agent) Enroll(ctx context.Context, serverURL, token string) error {
+	body, _ := json.Marshal(map[string]string{"token": token})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(serverURL, "/")+"/api/enroll/redeem", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	cl := &http.Client{Timeout: 10 * time.Second}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		if e.Error == "" {
+			e.Error = resp.Status
+		}
+		return fmt.Errorf("enroll rejected: %s", e.Error)
+	}
+	var out struct {
+		Repository string `json:"repository"`
+		Password   string `json:"password"`
+		ServerURL  string `json:"server_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return err
+	}
+	if out.Repository == "" || out.Password == "" {
+		return fmt.Errorf("enroll: incomplete response from server")
+	}
+	dir := filepath.Dir(a.cfgPath)
+	if dir != "" {
+		_ = os.MkdirAll(dir, 0o700)
+	}
+	pwPath := filepath.Join(dir, "enrolled-password")
+	if err := os.WriteFile(pwPath, []byte(out.Password), 0o600); err != nil {
+		return err
+	}
+	c := a.GetConfig()
+	c.Repository = out.Repository
+	c.PasswordFile = pwPath
+	c.ServerURL = out.ServerURL
+	return a.SetConfig(c)
+}
+
 // LastRun returns the most recent backup result and whether one is in flight.
 func (a *Agent) LastRun() (RunResult, bool) {
 	a.mu.Lock()
