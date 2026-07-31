@@ -117,7 +117,7 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	defer s.release()
 
 	start := time.Now()
-	out, err := s.coldC().CopyFrom(ctx, s.cfg.Load().Hot)
+	out, err := s.coldC().CopyFrom(ctx, s.cfg.Load().Hot, restic.StreamHooks{})
 	res := state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
@@ -141,7 +141,7 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 
 func (s *Scheduler) prune(ctx context.Context) {
 	start := time.Now()
-	out, err := s.coldC().ForgetPrune(ctx, s.cfg.Load().Retention)
+	out, err := s.coldC().ForgetPrune(ctx, s.cfg.Load().Retention, restic.StreamHooks{})
 	res := state.JobResult{Job: "prune", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
@@ -193,7 +193,7 @@ func (s *Scheduler) Check(ctx context.Context) {
 	defer s.release()
 
 	start := time.Now()
-	out, err := s.coldC().Check(ctx, "5%")
+	out, err := s.coldC().Check(ctx, "5%", restic.StreamHooks{})
 	res := state.JobResult{Job: "check", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		res.OK = false
