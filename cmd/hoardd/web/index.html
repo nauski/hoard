@@ -128,6 +128,14 @@
     </div>
     <p class="sub" id="actionMsg"></p>
     <div id="serverJob" class="sub" style="margin-top:8px"></div>
+    <div id="srvJobPanel" style="display:none;margin-top:10px">
+      <div class="pbar"><div id="srvPfill" class="pfill"></div></div>
+      <div class="sub" style="display:flex;justify-content:space-between;gap:10px;margin-top:6px">
+        <span id="srvStats"></span>
+        <button id="srvCancel" class="secondary" onclick="cancelServerJob()">Cancel</button>
+      </div>
+      <div id="srvTerm" class="term" style="height:180px"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -330,6 +338,31 @@ async function refresh(){
       }
     })();
 
+    // Live server-job panel: progress bar + terminal tail for the currently
+    // running server job (mirror/check/prune/verify/restore), driven by
+    // st.server_job. Hidden when no server job is in flight.
+    (function(){
+      const p = st.server_job, panel = $("#srvJobPanel");
+      if(!panel) return;
+      if(!p){ panel.style.display="none"; return; }
+      panel.style.display="block";
+      const pct = (typeof p.percent==="number" && p.percent>=0) ? p.percent : null;
+      $("#srvPfill").style.width = (pct==null?100:pct)+"%";
+      $("#srvPfill").style.opacity = (pct==null?"0.4":"1");
+      const now = st.now?new Date(st.now).getTime():Date.now();
+      const elapsed = Math.max(0,(now-new Date(p.started_at).getTime())/1000);
+      const mmss = s=>Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0");
+      let line = (p.name||"job");
+      if(pct!=null) line += " · "+pct.toFixed(1)+"%";
+      if(p.packs_total>0) line += " · "+p.packs_done+"/"+p.packs_total+" packs";
+      line += " · elapsed "+mmss(elapsed);
+      if(pct!=null && pct>0 && pct<100){ line += " · ETA "+mmss(elapsed*(100-pct)/pct); }
+      $("#srvStats").textContent = line;
+      const term = $("#srvTerm");
+      term.textContent = (p.tail||[]).join("\n");
+      term.scrollTop = term.scrollHeight;
+    })();
+
     // Honest verify badge: distinguishes "verified" (ok + a client file was
     // sampled) from "skipped" (ok but no client data yet to sample) from
     // "failed" from "never run".
@@ -393,6 +426,12 @@ async function trigger(job){
 }
 $("#btnMirror").onclick = ()=>trigger("mirror");
 $("#btnCheck").onclick = ()=>trigger("check");
+
+async function cancelServerJob(){
+  const b=document.getElementById("srvCancel"); b.disabled=true; b.textContent="Cancelling…";
+  try{ await fetch("/api/actions/cancel",{method:"POST"}); }catch(e){}
+  setTimeout(()=>{ b.disabled=false; b.textContent="Cancel"; }, 4000);
+}
 
 refresh();
 setInterval(refresh, 5000);
