@@ -5,3 +5,7 @@ hoard.json
 hoard-state.json
 /data/
 .env
+
+# Internal planning artifacts (specs/plans) — keep out of the repo
+docs/superpowers/
+.superpowers/
