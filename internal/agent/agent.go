@@ -51,6 +51,9 @@ type Config struct {
 	// speed (KiB/s); 0 = unlimited.
 	LimitUploadKiBps   int `json:"limit_upload_kibps"`
 	LimitDownloadKiBps int `json:"limit_download_kibps"`
+	// NotifyDesktop controls whether desktop notifications are sent on backup completion.
+	// Defaults to enabled (nil or true).
+	NotifyDesktop *bool `json:"notify_desktop,omitempty"`
 }
 
 // Agent owns config persistence, the restic client, and run state.
@@ -681,4 +684,24 @@ func cleanList(in []string) []string {
 		}
 	}
 	return out
+}
+
+// NotifyEnabled reports whether desktop notifications are on (default on).
+func (c Config) NotifyEnabled() bool { return c.NotifyDesktop == nil || *c.NotifyDesktop }
+
+// notifyArgs builds notify-send arguments for a finished run, and reports whether
+// to send. Real backups only (not restores, not user-cancels); failures — including
+// pre-flight — send a critical toast.
+func notifyArgs(rr RunResult) (args []string, ok bool) {
+	if rr.Kind != "backup" {
+		return nil, false
+	}
+	if !rr.OK && rr.Message == "cancelled" {
+		return nil, false
+	}
+	title, urgency := "Backup complete", "normal"
+	if !rr.OK {
+		title, urgency = "Backup failed", "critical"
+	}
+	return []string{"-a", "hoard", "-u", urgency, "hoard: " + title, rr.Message}, true
 }
