@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,8 +119,9 @@ func (c *Client) Snapshots(ctx context.Context) ([]Snapshot, error) {
 }
 
 // Copy copies all snapshots from src into this (destination) repo. Requires
-// restic >= 0.14. Both repos' credentials are passed through env.
-func (c *Client) CopyFrom(ctx context.Context, src config.Repo) (string, error) {
+// restic >= 0.14. Both repos' credentials are passed through env. Output is
+// streamed line-by-line through hooks so callers can show live progress.
+func (c *Client) CopyFrom(ctx context.Context, src config.Repo, hooks StreamHooks) (string, error) {
 	args := []string{
 		"copy",
 		"--from-repo", src.Repository,
@@ -127,6 +129,7 @@ func (c *Client) CopyFrom(ctx context.Context, src config.Repo) (string, error) 
 	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
 	env := append(cmd.Environ(), c.env()...)
 	env = append(env, "RESTIC_FROM_PASSWORD="+src.Password)
+	env = append(env, "RESTIC_PROGRESS_FPS=1")
 	if src.S3AccessKeyID != "" {
 		// Only one repo can use AWS_* env; if the source is also S3 this needs
 		// per-repo config. For hot(local)->cold(e2) the source is local, so the
@@ -134,8 +137,7 @@ func (c *Client) CopyFrom(ctx context.Context, src config.Repo) (string, error) 
 		env = append(env, "RESTIC_FROM_REPOSITORY="+src.Repository)
 	}
 	cmd.Env = env
-	out, err := combinedRun(cmd)
-	return out, err
+	return streamRun(cmd, hooks.dispatch)
 }
 
 // BackupResult summarizes a completed backup (parsed from restic --json).
@@ -400,13 +402,15 @@ func appendTail(lines []string, s string) []string {
 
 // Check verifies repository integrity. readData also re-reads a subset of pack
 // files (slower, stronger); pass "" to skip, or "5%" for a sampled read.
-func (c *Client) Check(ctx context.Context, readDataSubset string) (string, error) {
+// Output is streamed line-by-line through hooks.
+func (c *Client) Check(ctx context.Context, readDataSubset string, hooks StreamHooks) (string, error) {
 	args := []string{"check"}
 	if readDataSubset != "" {
 		args = append(args, "--read-data-subset", readDataSubset)
 	}
-	out, err := c.run(ctx, args...)
-	return string(out), err
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
+	cmd.Env = append(cmd.Environ(), c.env()...)
+	return streamRun(cmd, hooks.dispatch)
 }
 
 // retentionArgs builds the --keep-* flags for a retention policy.
@@ -431,11 +435,13 @@ func retentionArgs(r config.Retention) []string {
 }
 
 // ForgetPrune applies a retention policy and prunes unreferenced data.
-func (c *Client) ForgetPrune(ctx context.Context, r config.Retention) (string, error) {
+// Output is streamed line-by-line through hooks.
+func (c *Client) ForgetPrune(ctx context.Context, r config.Retention, hooks StreamHooks) (string, error) {
 	args := []string{"forget", "--prune"}
 	args = append(args, retentionArgs(r)...)
-	out, err := c.run(ctx, args...)
-	return string(out), err
+	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
+	cmd.Env = append(cmd.Environ(), c.env()...)
+	return streamRun(cmd, hooks.dispatch)
 }
 
 // ForgetDryRun reports which snapshots the retention policy WOULD forget,
@@ -637,13 +643,96 @@ func (c *Client) EnsureInit(ctx context.Context) error {
 	return err
 }
 
-func combinedRun(cmd *exec.Cmd) (string, error) {
+// StreamHooks are optional callbacks fired while a long-running command
+// (copy/check/forget --prune) streams its output line by line.
+type StreamHooks struct {
+	// OnProgress fires whenever a line matches restic's textual progress
+	// format ("[m:ss] pct%  done / total packs").
+	OnProgress func(pct float64, done, total int)
+	// OnActivity fires for every output line, so callers can show a live tail.
+	OnActivity func(line string)
+}
+
+// progressRE matches restic's textual progress lines, e.g.:
+// "[0:01] 48.39%  15 / 31 packs copied"
+var progressRE = regexp.MustCompile(`^\[[0-9:]+\]\s+([0-9]+(?:\.[0-9]+)?)%\s+([0-9]+)\s*/\s*([0-9]+)\b`)
+
+// parseProgress extracts percent/done/total from a restic textual progress
+// line. ok is false if the line doesn't match.
+func parseProgress(line string) (float64, int, int, bool) {
+	m := progressRE.FindStringSubmatch(strings.TrimSpace(line))
+	if m == nil {
+		return 0, 0, 0, false
+	}
+	pct, _ := strconv.ParseFloat(m[1], 64)
+	done, _ := strconv.Atoi(m[2])
+	total, _ := strconv.Atoi(m[3])
+	return pct, done, total, true
+}
+
+// streamRun runs cmd, feeding each merged stdout/stderr line to onLine, and
+// returns the tail of all output. os/exec serializes writes when
+// Stdout==Stderr, so merging both into a single pipe is race-free.
+func streamRun(cmd *exec.Cmd, onLine func(string)) (string, error) {
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
 	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	// Return the tail of output so callers can log/store it.
-	return tail(buf.String(), 4000), err
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(pr)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := strings.TrimRight(sc.Text(), "\r")
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+			if onLine != nil {
+				onLine(line)
+			}
+		}
+		// Always drain the rest of the pipe. If the scanner bailed early (e.g. a
+		// pathologically long line -> bufio.ErrTooLong), the child would otherwise
+		// block writing to a pipe nobody reads and cmd.Wait() would hang forever.
+		_, _ = io.Copy(io.Discard, pr)
+	}()
+	err := cmd.Wait()
+	pw.Close()
+	<-done
+	out := tail(buf.String(), 4000)
+	// Enrich the bare "exit status N" with restic's own last message so failure
+	// alerts/logs stay informative (c.run did this before streaming).
+	if err != nil {
+		if msg := lastLine(out); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+	}
+	return out, err
+}
+
+// lastLine returns the last non-empty line of s (trimmed), or "".
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// dispatch builds an onLine callback that fans out to the activity hook and
+// the parsed-progress hook.
+func (h StreamHooks) dispatch(line string) {
+	if h.OnActivity != nil {
+		h.OnActivity(line)
+	}
+	if p, d, t, ok := parseProgress(line); ok && h.OnProgress != nil {
+		h.OnProgress(p, d, t)
+	}
 }
 
 func tail(s string, n int) string {

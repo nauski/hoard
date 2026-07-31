@@ -38,6 +38,104 @@ type Scheduler struct {
 
 	mu      sync.Mutex // serializes restic operations; only one runs at a time
 	running string     // name of the currently running job, "" if idle
+
+	job liveJob // live view of the in-flight server job; own mutex, never nested with mu
+}
+
+// ServerJobView is a point-in-time snapshot of the currently running server
+// job (mirror/prune/check), for the dashboard's live progress display.
+type ServerJobView struct {
+	Name       string    `json:"name"`
+	StartedAt  time.Time `json:"started_at"`
+	Percent    float64   `json:"percent"`
+	PacksDone  int       `json:"packs_done"`
+	PacksTotal int       `json:"packs_total"`
+	Tail       []string  `json:"tail"`
+}
+
+// liveJob holds the mutable state behind ServerJob/CancelServerJob. It has
+// its own mutex, deliberately separate from Scheduler.mu (which only guards
+// the acquire/release "one job at a time" lock): hooks fire from inside the
+// running restic command and must never risk lock ordering against acquire.
+type liveJob struct {
+	mu     sync.Mutex
+	active bool
+	view   ServerJobView
+	cancel context.CancelFunc
+}
+
+// beginJob starts tracking a new live job (e.g. "mirror") and stores its
+// cancel func so CancelServerJob can abort it.
+func (s *Scheduler) beginJob(name string, cancel context.CancelFunc) {
+	s.job.mu.Lock()
+	defer s.job.mu.Unlock()
+	s.job.active = true
+	s.job.cancel = cancel
+	s.job.view = ServerJobView{Name: name, StartedAt: time.Now(), Percent: -1}
+}
+
+// phaseJob switches the live view to a new phase of the same job (e.g.
+// mirror -> prune) without touching the stored cancel func.
+func (s *Scheduler) phaseJob(name string) {
+	s.job.mu.Lock()
+	defer s.job.mu.Unlock()
+	s.job.view = ServerJobView{Name: name, StartedAt: time.Now(), Percent: -1}
+}
+
+// jobProgress is a restic.StreamHooks.OnProgress callback that updates the
+// live view's percent/pack counters.
+func (s *Scheduler) jobProgress(pct float64, done, total int) {
+	s.job.mu.Lock()
+	defer s.job.mu.Unlock()
+	s.job.view.Percent = pct
+	s.job.view.PacksDone = done
+	s.job.view.PacksTotal = total
+}
+
+// jobLine is a restic.StreamHooks.OnActivity callback that appends to the
+// live tail, capped at 200 lines.
+func (s *Scheduler) jobLine(line string) {
+	s.job.mu.Lock()
+	defer s.job.mu.Unlock()
+	s.job.view.Tail = append(s.job.view.Tail, line)
+	if len(s.job.view.Tail) > 200 {
+		s.job.view.Tail = s.job.view.Tail[len(s.job.view.Tail)-200:]
+	}
+}
+
+// endJob clears the live view once the job (all phases) has finished.
+func (s *Scheduler) endJob() {
+	s.job.mu.Lock()
+	defer s.job.mu.Unlock()
+	s.job.active = false
+	s.job.cancel = nil
+}
+
+// ServerJob returns a snapshot of the currently running server job, or nil
+// if none is running. The Tail slice is copied so a concurrent jobLine
+// append can't race the caller reading it.
+func (s *Scheduler) ServerJob() *ServerJobView {
+	s.job.mu.Lock()
+	defer s.job.mu.Unlock()
+	if !s.job.active {
+		return nil
+	}
+	v := s.job.view
+	v.Tail = append([]string(nil), s.job.view.Tail...)
+	return &v
+}
+
+// CancelServerJob cancels the currently running server job, if any. Returns
+// false when idle.
+func (s *Scheduler) CancelServerJob() bool {
+	s.job.mu.Lock()
+	c := s.job.cancel
+	s.job.mu.Unlock()
+	if c == nil {
+		return false
+	}
+	c()
+	return true
 }
 
 func New(cfg *config.Store, resticBin string, store *state.Store, log *slog.Logger) *Scheduler {
@@ -116,10 +214,23 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	}
 	defer s.release()
 
+	jctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.beginJob("mirror", cancel)
+	defer s.endJob()
+
 	start := time.Now()
-	out, err := s.coldC().CopyFrom(ctx, s.cfg.Load().Hot)
+	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
+	out, err := s.coldC().CopyFrom(jctx, s.cfg.Load().Hot, hooks)
 	res := state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
+		if jctx.Err() == context.Canceled {
+			res.OK = false
+			res.Message = "cancelled"
+			s.log.Info("mirror cancelled")
+			s.store.RecordJob(res)
+			return // skip prune; a user-initiated cancel is not a failure
+		}
 		res.OK = false
 		res.Message = err.Error()
 		s.log.Error("mirror failed", "err", err)
@@ -136,14 +247,21 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	s.log.Info("mirror ok")
 
 	// Retention runs on the cold repo right after a successful copy.
-	s.prune(ctx)
+	s.prune(jctx)
 }
 
 func (s *Scheduler) prune(ctx context.Context) {
+	s.phaseJob("prune")
 	start := time.Now()
-	out, err := s.coldC().ForgetPrune(ctx, s.cfg.Load().Retention)
+	out, err := s.coldC().ForgetPrune(ctx, s.cfg.Load().Retention, restic.StreamHooks{OnActivity: s.jobLine})
 	res := state.JobResult{Job: "prune", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
+		if ctx.Err() == context.Canceled {
+			res.OK = false
+			res.Message = "cancelled"
+			s.store.RecordJob(res)
+			return
+		}
 		res.OK = false
 		res.Message = err.Error()
 		s.log.Error("prune failed", "err", err)
@@ -192,10 +310,23 @@ func (s *Scheduler) Check(ctx context.Context) {
 	}
 	defer s.release()
 
+	jctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.beginJob("check", cancel)
+	defer s.endJob()
+
 	start := time.Now()
-	out, err := s.coldC().Check(ctx, "5%")
+	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
+	out, err := s.coldC().Check(jctx, "5%", hooks)
 	res := state.JobResult{Job: "check", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
+		if jctx.Err() == context.Canceled {
+			res.OK = false
+			res.Message = "cancelled"
+			s.log.Info("check cancelled")
+			s.store.RecordJob(res)
+			return
+		}
 		res.OK = false
 		res.Message = err.Error()
 		s.log.Error("check failed", "err", err)

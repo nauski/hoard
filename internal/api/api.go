@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("POST /api/actions/mirror", s.action("mirror"))
 	mux.HandleFunc("POST /api/actions/check", s.action("check"))
+	mux.HandleFunc("POST /api/actions/cancel", s.handleCancel)
 	// Backup browser (reads the fast hot repo; deletes hit hot + cold).
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("GET /api/forecast", s.handleForecast)
@@ -99,6 +100,7 @@ type statusResponse struct {
 	HotRepo    string                     `json:"hot_repo"`
 	LastVerify *state.VerifyResult        `json:"last_verify,omitempty"`
 	Outcomes   map[string]state.Outcome   `json:"outcomes"`
+	ServerJob  *scheduler.ServerJobView   `json:"server_job,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +114,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		HotRepo:    s.cfg.Load().Hot.Repository,
 		LastVerify: snap.LastVerify,
 		Outcomes:   snap.ClientOutcomes,
+		ServerJob:  s.sched.ServerJob(),
 	})
+}
+
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if s.sched.CancelServerJob() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
+		return
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{"error": "no job running"})
 }
 
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
