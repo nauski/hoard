@@ -114,13 +114,19 @@ actually come back. For a backup tool this is the point.
 
 ## P3 — Novel ideas
 
-- [ ] **Client enrollment tokens** — server mints a short-lived token; a new agent
-  redeems it to auto-configure repo URL + fetch a scoped password. One-command
-  onboarding, no hand-managed secrets (replaces the Nix + sops + password-file
-  dance).
-- [ ] **Storage forecast** — from the size-growth trend, project "e2 will hit ~X GB
-  / ~$Y per month by <date>". Backup tools rarely tell you where the bill is going.
-- [ ] **Native desktop notifications** — quiet "backup complete / failed" toast from
+- [x] **Client enrollment tokens** — DONE (server 0.25). Server mints a one-time,
+  15-min token (`POST /api/enroll/mint`); a new agent redeems it
+  (`hoard-agent -enroll <token> -enroll-server <url>`) to auto-configure repo URL +
+  shared password + dashboard URL. Convenience layer on the LAN-trust model (redeem
+  returns the shared password, same exposure as the existing open recovery-kit —
+  not a boundary against a hostile LAN device). Per-client scoped passwords were
+  deferred (would need `restic key` lifecycle).
+- [x] **Storage forecast** — DONE (server 0.24). Daily `restic stats` size samples →
+  least-squares projection ("Cold: 42 GiB now · +1.8 GiB/week · ~58 GiB by <date>").
+  Size only, no cost estimate (pricing drifts).
+- [x] **Native desktop notifications** — DONE (agent). `notify-send` toast on backup
+  complete/failed via the Nix service (libnotify + session-bus wiring); Settings
+  toggle, default on. Quiet "backup complete / failed" toast from
   the per-user agent service, so you don't need to open the GUI.
 
 ---
