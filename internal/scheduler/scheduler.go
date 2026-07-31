@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
+	"github.com/nauski/hoard/internal/forecast"
 	"github.com/nauski/hoard/internal/restic"
 	"github.com/nauski/hoard/internal/state"
 )
@@ -66,6 +67,7 @@ func (s *Scheduler) Running() string {
 func (s *Scheduler) Run(ctx context.Context) {
 	// Refresh freshness immediately so the dashboard isn't empty on boot.
 	s.RefreshClients(ctx)
+	s.maybeSampleSize(ctx)
 
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
@@ -82,6 +84,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 			// Always refresh freshness each tick (cheap: one snapshots call).
 			s.RefreshClients(ctx)
+			s.maybeSampleSize(ctx)
 
 			if s.cfg.Load().Schedule.Mirror == hhmm {
 				lastFired = stamp
@@ -246,6 +249,30 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 		latest[host] = c
 	}
 	s.store.SetClients(latest)
+}
+
+// maybeSampleSize records a repo-size sample at most once per 24h. Hot is
+// required; cold is best-effort (0 if unconfigured/unreachable). Errors
+// sampling hot are logged and skipped so the tick never wedges.
+func (s *Scheduler) maybeSampleSize(ctx context.Context) {
+	if !forecast.DueForSample(s.store.LastSizeSampleAt(), time.Now(), 24*time.Hour) {
+		return
+	}
+	hot, err := s.hotC().StatsMode(ctx, "raw-data")
+	if err != nil {
+		s.log.Warn("size sample: hot stats failed", "err", err)
+		return
+	}
+	sample := state.SizeSample{At: time.Now(), HotStored: int64(hot.TotalSize)}
+	if s.cfg.Load().Cold.Repository != "" {
+		if cold, err := s.coldC().StatsMode(ctx, "raw-data"); err != nil {
+			s.log.Warn("size sample: cold stats failed (recording hot only)", "err", err)
+		} else {
+			sample.ColdStored = int64(cold.TotalSize)
+		}
+	}
+	s.store.AppendSizeSample(sample)
+	s.log.Info("recorded size sample", "hot", sample.HotStored, "cold", sample.ColdStored)
 }
 
 func (s *Scheduler) acquire(job string) bool {
