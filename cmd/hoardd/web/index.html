@@ -310,11 +310,23 @@ async function refresh(){
         el.innerHTML = '▸ '+esc(labels[run]||"Working")+'…';
         el.style.color = "var(--warn)";
       } else {
+        // Idle: only reflect the two actions THIS card exposes — Mirror & Verify
+        // (check). prune (a mirror side-effect), the restore fire-drill and
+        // restores have their own homes; their results belong in Recent Jobs, not
+        // under these buttons. Show a success only briefly after it finishes (a
+        // confirmation of an action you just triggered); keep a failure up because
+        // it's actionable. Otherwise stay blank.
         const jobs = st.jobs||{};
+        const now = st.now ? new Date(st.now).getTime() : Date.now();
         let newest=null;
-        ["mirror","check","prune","verify"].forEach(k=>{ const j=jobs[k]; if(j && (!newest || (j.ended_at||"")>(newest.ended_at||""))) newest=j; });
-        el.innerHTML = newest ? (newest.ok?'✓ ':'✗ ')+esc(newest.message||"") : "";
-        el.style.color = newest && !newest.ok ? "var(--bad)" : "var(--muted)";
+        ["mirror","check"].forEach(k=>{ const j=jobs[k]; if(j && (!newest || (j.ended_at||"")>(newest.ended_at||""))) newest=j; });
+        const ageMs = newest && newest.ended_at ? (now - new Date(newest.ended_at).getTime()) : Infinity;
+        if(newest && (!newest.ok || ageMs < 15000)){
+          el.innerHTML = (newest.ok?'✓ ':'✗ ')+esc(newest.message||"");
+          el.style.color = newest.ok ? "var(--muted)" : "var(--bad)";
+        } else {
+          el.innerHTML = "";
+        }
       }
     })();
 
