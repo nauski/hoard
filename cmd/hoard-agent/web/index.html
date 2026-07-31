@@ -97,9 +97,9 @@
 <main>
   <section class="tab" id="tab-backup">
   <div class="card">
+    <h2>Back up this machine<span class="help below" tabindex="0" data-tip="Run a backup now. restic auto-retries within a run; a fully-failed run stays failed until you retry here.">ⓘ</span></h2>
     <div class="bar">
-      <button id="save" class="ghost" onclick="save()">Save settings</button>
-      <button id="now" class="primary" onclick="backup()">Back up now</button><span class="help below" tabindex="0" data-tip="Run a backup now. restic auto-retries within a run; a fully-failed run stays failed until you retry here.">ⓘ</span>
+      <button id="now" class="primary" onclick="backup()">Back up now</button>
       <span id="msg" class="msg sub"></span>
     </div>
   </div>
@@ -179,6 +179,11 @@
     <h2>Excludes (restic patterns)<span class="help" tabindex="0" data-tip="restic patterns to skip — e.g. caches, node_modules, temp files.">ⓘ</span></h2>
     <div id="excludes" class="list"></div>
     <button class="add" onclick="addRow('excludes','')">+ add exclude</button>
+  </div>
+
+  <div class="bar" style="justify-content:flex-end;margin-top:4px">
+    <button id="save" class="primary" onclick="save()">Save settings</button>
+    <span id="smsg" class="msg sub"></span>
   </div>
   </section>
 
@@ -323,7 +328,7 @@ function addPath(p){
   [...document.querySelectorAll("#paths input")].forEach(i=>{ if(!i.value.trim()) i.closest(".row").remove(); });
   addRow("paths",p);
   browseGo(browseCur); // refresh "added ✓" markers
-  $("#msg").textContent="added "+p; setTimeout(()=>$("#msg").textContent="",2000);
+  $("#smsg").textContent="added "+p; setTimeout(()=>$("#smsg").textContent="",2000);
 }
 // Resolves the pending pickFolder() promise with the chosen path and closes
 // the modal (without re-resolving via closeBrowse's cancel path).
@@ -361,8 +366,8 @@ async function save(){
     schedule:$("#sched").value.trim(), paths:readList("paths"), excludes:readList("excludes"),
     limit_upload_kibps:(parseInt($("#limUp").value,10)||0), limit_download_kibps:(parseInt($("#limDown").value,10)||0) };
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  $("#msg").textContent = r.ok ? "saved ✓" : "save failed";
-  setTimeout(()=>$("#msg").textContent="",2500);
+  $("#smsg").textContent = r.ok ? "saved ✓" : "save failed";
+  setTimeout(()=>$("#smsg").textContent="",2500);
 }
 async function backup(){
   await save();
