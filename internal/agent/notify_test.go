@@ -2,6 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -80,4 +84,23 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestSendNotifyInvokesBinary(t *testing.T) {
+	dir := t.TempDir()
+	out := dir + "/args.txt"
+	script := dir + "/notify.sh"
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+out+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{log: slog.New(slog.NewTextHandler(io.Discard, nil)), notifyBin: script}
+	a.sendNotify(script, []string{"-u", "critical", "hoard: Backup failed", "boom"})
+	// sendNotify runs synchronously here; storeRun calls it in a goroutine.
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("script not invoked: %v", err)
+	}
+	if !strings.Contains(string(data), "Backup failed") || !strings.Contains(string(data), "boom") {
+		t.Fatalf("unexpected args: %q", data)
+	}
 }
