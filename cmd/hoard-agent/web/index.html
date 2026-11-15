@@ -113,6 +113,8 @@
     </div>
   </div>
 
+  <div class="card" id="managedBox" style="display:none"></div>
+
   <div class="card" id="progressCard" style="display:none">
     <h2 id="runTitle">Running backup</h2>
     <div class="progress">
@@ -462,6 +464,16 @@ async function refresh(){
     $("#now").disabled=running; $("#pinNow").disabled=running;
     renderLive(live);
     $("#next").textContent = st.next_run ? "next run "+fmt(st.next_run) : "";
+    const mg=st.config&&st.config.remote_management&&st.config.managed, box=$("#managedBox");
+    if(mg){
+      const li=a=>(a||[]).length?(a||[]).map(x=>'<div class="mono">'+esc(x)+'</div>').join(""):'<div class="sub">none</div>';
+      box.style.display="";
+      box.innerHTML='<h2>Required by the server</h2><div class="sub">This machine is managed from the hoard server. The items below are always applied and cannot be changed here; paths you add on this page are backed up in addition.</div>'
+        +'<div class="sub" style="margin-top:8px">Required paths</div>'+li(mg.paths)
+        +'<div class="sub" style="margin-top:8px">Server excludes</div>'+li(mg.excludes)
+        +'<div class="sub" style="margin-top:8px">Schedule: <span class="mono">'+esc(mg.schedule||"not set by the server")+'</span></div>'
+        +((st.ignored_excludes||[]).length?'<div class="danger-text" style="margin-top:8px">Your excludes below are ignored because they could reach a required path (an exclude only works under a folder that you added and that is outside every required path):'+li(st.ignored_excludes)+'</div>':'');
+    } else { box.style.display="none"; }
     const lr=st.last_run;
     // A run only counts if it actually happened this process lifetime (lastRun is
     // in-memory, so it's the zero value 0001-01-01 right after a restart). Without

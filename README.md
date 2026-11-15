@@ -481,32 +481,51 @@ Things to know:
   (`rest:http://name:secret@server:8000/name/`); it lives in the agent's 0600
   config file.
 
-**Managing clients from the server dashboard.** For headless machines: each
-client row has a **Manage** button that edits that client's paths, excludes,
-schedule and priority settings, and can ask it to back up now. It needs private
-repositories (above) and agent 0.32+, and it is off until you opt in on the
-client:
+**Managing clients from the server dashboard.** Each client row has a
+**Manage** button where the server sets what that client must back up: required
+paths, excludes, schedule and priority settings, plus "Back up now". It needs
+private repositories (above) and agent 0.33+, and it is off until you opt in on
+the client:
 
 ```sh
 hoard-agent manage on        # then restart the agent if it runs as a service
 ```
 
-How it works and what protects it:
+The server's settings are a floor, not a replacement:
+
+- **Paths:** the client always backs up the required paths and can add its own.
+  It cannot remove a required one.
+- **Excludes:** only the server's excludes apply inside required paths. A
+  client's own exclude works only below a folder the client added itself that
+  lies outside every required path; any other local exclude is ignored (the
+  agent logs and shows which). Exclude files and the cache / marker / size
+  exclusions apply to every path, so on a managed client they come from the
+  server only.
+- **Schedule:** the server's schedule runs when it sets one; the client can
+  still start extra backups by hand.
+- **Priority settings:** the server's when set, otherwise the client's.
+
+How it travels, and what protects it:
 
 - Nothing connects in to a client. The agent checks in with the server (every
   minute when it runs continuously, at the start of each run when a timer
   starts it) using its own login, and the reply carries any new settings.
-- The server can set only what to back up, when, and how gently. It can never
-  change the repository, the password file or the server address, cannot start
-  a restore and cannot run commands.
+- The server can never change the repository, the password file or the server
+  address, cannot start a restore and cannot run commands.
 - Each settings push is signed with that client's repository password, which is
   never sent over the network after enrollment, and carries a version number.
   Someone who can read or alter traffic on your LAN cannot forge, change or
   replay a push, even without TLS.
-- What remains: whoever controls the server or knows the dashboard password
-  can make a managed client back up any file its user can read, and the server
-  can read every repository. That is why it is opt-in per machine. "Back up
-  now" only reaches agents that run continuously.
+
+What "cannot remove" means in practice: whoever controls the client machine can
+still edit its config, turn management off or stop the agent, so the agent's
+refusal is a guard rail. The guarantee is on the server: after every backup it
+checks that the snapshot covers every required path, and it alerts and marks
+the client "required path missing" if not, and "management off on client" (with
+an alert) when a client stops accepting its settings. In the other direction,
+whoever controls the server or knows the dashboard password can make a managed
+client back up any file its user can read; that is why it is opt-in per
+machine. "Back up now" only reaches agents that run continuously.
 
 **Append-only.** Set `HOARD_REST_APPEND_ONLY=true` on the server container and
 rest-server runs with `--append-only`: clients can add backups, find and restore,

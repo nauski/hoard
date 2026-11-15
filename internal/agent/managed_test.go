@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nauski/hoard/internal/config"
@@ -76,8 +77,16 @@ func TestApplyManaged(t *testing.T) {
 		t.Fatalf("valid push rejected: %v", err)
 	}
 	c := a.GetConfig()
-	if c.Paths[0] != "/home/me" || c.Schedule != "2h" || c.Nice != 19 || !c.ExcludeCaches || c.ManagedVersion != 1 {
-		t.Fatalf("settings not applied: %+v", c)
+	if c.Managed == nil || c.Managed.Paths[0] != "/home/me" || c.ManagedVersion != 1 {
+		t.Fatalf("settings not stored: %+v", c)
+	}
+	// This machine's own settings are left alone; the server's are a floor.
+	if len(c.Paths) != 1 || c.Paths[0] != "/original" || c.Schedule != "21:00" {
+		t.Fatalf("local settings were overwritten: %+v", c)
+	}
+	eff, _ := a.Effective()
+	if len(eff.Paths) != 2 || eff.Paths[0] != "/home/me" || eff.Paths[1] != "/original" || eff.Schedule != "2h" || eff.Nice != 19 || !eff.ExcludeCaches {
+		t.Fatalf("effective settings wrong: %+v", eff)
 	}
 	// What the server may never touch is unchanged.
 	if c.Repository != "rest:http://frame:login@nas:8000/frame/" || c.Host != "frame" || c.Tags[0] != "keep" || c.PasswordFile == "" {
@@ -86,7 +95,7 @@ func TestApplyManaged(t *testing.T) {
 	// Persisted.
 	raw, err := os.ReadFile(a.cfgPath)
 	var onDisk Config
-	if err != nil || json.Unmarshal(raw, &onDisk) != nil || onDisk.Schedule != "2h" {
+	if err != nil || json.Unmarshal(raw, &onDisk) != nil || onDisk.Managed == nil || onDisk.Managed.Schedule != "2h" {
 		t.Fatalf("not persisted: %v", err)
 	}
 
@@ -96,7 +105,7 @@ func TestApplyManaged(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = a.applyManaged(push("repo-secret", "frame", 1, want))
-	if got := a.GetConfig(); got.Schedule != "1h" || got.ManagedVersion != 2 {
+	if got := a.GetConfig(); got.Managed.Schedule != "1h" || got.ManagedVersion != 2 {
 		t.Fatalf("an old push was replayed: %+v", got)
 	}
 }
@@ -131,7 +140,64 @@ func TestCheckInAppliesPush(t *testing.T) {
 	if user != "frame" || pass != "login" {
 		t.Fatalf("check-in did not use the client's own login: %q %q", user, pass)
 	}
-	if c := a.GetConfig(); c.Schedule != "2h" || c.ManagedVersion != 5 {
+	if c, _ := a.Effective(); c.Schedule != "2h" || c.ManagedVersion != 5 {
 		t.Fatalf("push from check-in not applied: %+v", c)
+	}
+}
+
+// TestEffectiveIsAFloor: the server dictates a minimum; this machine can add
+// paths, but cannot remove a required path or exclude its way into one.
+func TestEffectiveIsAFloor(t *testing.T) {
+	server := &config.ManagedSettings{
+		Paths:    []string{"/home/me", "/etc"},
+		Excludes: []string{"node_modules"},
+		Schedule: "1h", ExcludeLargerThan: "1G",
+	}
+	c := Config{
+		RemoteManagement: true, Managed: server,
+		// Local: drops /etc, adds /srv/media, repeats /home/me, adds a folder inside a required path.
+		Paths: []string{"/home/me", "/srv/media", "/home/me/projects"},
+		Excludes: []string{
+			"/srv/media/cache",      // below a path only this machine adds: allowed
+			"/home/me/secret",       // inside a required path: ignored
+			"/home/me/projects/big", // the local path lies inside a required one: ignored
+			"**/.git",               // would apply everywhere: ignored
+			"/etc",                  // a required path itself: ignored
+			"/srv/mediaXcache",      // not below /srv/media: ignored
+		},
+		Schedule: "", ExcludeLargerThan: "1K", ExcludeCaches: true,
+		ExcludeFiles: []string{"/home/me/.ignore"},
+	}
+	eff, ignored := c.effective()
+
+	wantPaths := []string{"/home/me", "/etc", "/srv/media", "/home/me/projects"}
+	if strings.Join(eff.Paths, " ") != strings.Join(wantPaths, " ") {
+		t.Fatalf("paths = %v, want %v (required first, local added, nothing removed)", eff.Paths, wantPaths)
+	}
+	if got := strings.Join(eff.Excludes, " "); got != "node_modules /srv/media/cache" {
+		t.Fatalf("excludes = %q", got)
+	}
+	if len(ignored) != 5 {
+		t.Fatalf("ignored = %v, want the 5 patterns that could reach a required path", ignored)
+	}
+	// Settings that apply to every path come from the server only.
+	if eff.ExcludeLargerThan != "1G" || eff.ExcludeCaches || len(eff.ExcludeFiles) != 0 {
+		t.Fatalf("global exclusions not taken from the server: %+v", eff)
+	}
+	// The schedule cannot be switched off locally.
+	if eff.Schedule != "1h" {
+		t.Fatalf("schedule = %q, want the server's", eff.Schedule)
+	}
+	// A local path that contains a required one gets no local excludes either.
+	c2 := Config{RemoteManagement: true, Managed: &config.ManagedSettings{Paths: []string{"/home/me"}},
+		Paths: []string{"/home"}, Excludes: []string{"/home/other/tmp", "/home/me"}}
+	if eff2, ign := c2.effective(); len(eff2.Excludes) != 0 || len(ign) != 2 {
+		t.Fatalf("excludes under a local parent of a required path were accepted: %v", eff2.Excludes)
+	}
+
+	// With management off, or nothing pushed yet, the config applies as written.
+	c.RemoteManagement = false
+	if eff, ignored := c.effective(); len(eff.Paths) != 3 || len(ignored) != 0 || eff.ExcludeLargerThan != "1K" {
+		t.Fatalf("unmanaged config was altered: %+v", eff)
 	}
 }

@@ -63,6 +63,12 @@ type Client struct {
 	AgentVersion string     `json:"agent_version,omitempty"`
 	Managed      bool       `json:"managed,omitempty"`
 	SeenAt       *time.Time `json:"seen_at,omitempty"`
+	// ManagementOff: the dashboard has settings for this client, but the
+	// client says it does not accept them. Status API only.
+	ManagementOff bool `json:"management_off,omitempty"`
+	// MissingPaths are server-required paths that the client's newest backup
+	// does not cover.
+	MissingPaths []string `json:"missing_paths,omitempty"`
 	// Anomaly is set when the latest backup lost a large share of its files; it
 	// stays until dismissed on the dashboard.
 	Anomaly *Anomaly `json:"anomaly,omitempty"`
@@ -89,6 +95,9 @@ type ClientInfo struct {
 	Managed        bool            `json:"managed"`         // the client accepts settings from the server
 	AppliedVersion int             `json:"applied_version"` // last settings push it applied
 	Settings       json.RawMessage `json:"settings,omitempty"`
+	// IgnoredExcludes are the client's own exclude patterns it is not applying
+	// because they could reach a server-required path.
+	IgnoredExcludes []string `json:"ignored_excludes,omitempty"`
 }
 
 // Store is the persisted, concurrency-safe application state.

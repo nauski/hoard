@@ -41,7 +41,8 @@ func nextRun(schedule string, last, boot, now time.Time) (time.Time, error) {
 // no schedule is set.
 func (a *Agent) NextRun(now time.Time) (time.Time, error) {
 	a.mu.Lock()
-	sched, last, boot := a.cfg.Schedule, a.lastStart, a.boot
+	eff, _ := a.cfg.effective()
+	sched, last, boot := eff.Schedule, a.lastStart, a.boot
 	a.mu.Unlock()
 	if sched == "" {
 		return time.Time{}, nil

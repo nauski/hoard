@@ -86,11 +86,12 @@ type reportRequest struct {
 	Live       json.RawMessage `json:"live"`
 	LastResult *reportOutcome  `json:"last_result"`
 	// Sent by agents 0.32+ in their periodic check-in.
-	CheckIn        bool            `json:"checkin"`
-	Managed        bool            `json:"managed"`
-	AppliedVersion int             `json:"applied_version"`
-	Settings       json.RawMessage `json:"settings"`
-	AgentVersion   string          `json:"agent_version"`
+	CheckIn         bool            `json:"checkin"`
+	Managed         bool            `json:"managed"`
+	AppliedVersion  int             `json:"applied_version"`
+	Settings        json.RawMessage `json:"settings"`
+	AgentVersion    string          `json:"agent_version"`
+	IgnoredExcludes []string        `json:"ignored_excludes"`
 }
 
 // managedPush is a signed settings push handed to a client in a report reply.
@@ -118,9 +119,17 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	reply := map[string]any{"command": cmd}
 	if req.CheckIn {
+		// Tell someone when a client that was accepting the server's settings
+		// stops doing so.
+		if prev := s.store.ClientInfoFor(req.Host); prev.Managed && !req.Managed {
+			if cl, ok := s.cfg.Load().Clients[req.Host]; ok && cl.Managed != nil {
+				go s.Notify(context.Background(), "remote management was turned off on a client",
+					req.Host+" no longer accepts the backup settings saved on the server; it now decides by itself what it backs up.")
+			}
+		}
 		s.store.SetClientInfo(req.Host, state.ClientInfo{
 			SeenAt: time.Now(), AgentVersion: req.AgentVersion, Managed: req.Managed,
-			AppliedVersion: req.AppliedVersion, Settings: req.Settings,
+			AppliedVersion: req.AppliedVersion, Settings: req.Settings, IgnoredExcludes: req.IgnoredExcludes,
 		})
 		// Hand over settings saved on the dashboard that this client has not
 		// applied yet. Only clients with their own repository can be managed:
@@ -178,7 +187,7 @@ func (s *Server) handleSetClientConfig(w http.ResponseWriter, r *http.Request) {
 		// Stay ahead of whatever the client says it applied, e.g. after the
 		// server's config was restored from an older copy.
 		ver = max(cl.ManagedVersion, s.store.ClientInfoFor(req.Host).AppliedVersion) + 1
-		cl.Managed, cl.ManagedVersion = &req.Settings, ver
+		cl.Managed, cl.ManagedVersion, cl.ManagedAt = &req.Settings, ver, time.Now()
 		clients[req.Host] = cl
 		c.Clients = clients
 	})

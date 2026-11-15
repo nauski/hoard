@@ -117,9 +117,10 @@
   <div class="card" id="manageCard" hidden>
     <h2>Manage <span id="mgHost" class="mono"></span> <button class="mini" onclick="$('#manageCard').hidden=true">close</button></h2>
     <div id="mgState" class="sub" style="margin-bottom:8px"></div>
+    <div id="mgLocal" class="sub" style="margin-bottom:8px"></div>
     <div class="setgrid">
-      <div style="grid-column:1/-1"><label class="sub">Paths to back up (one per line, absolute)</label><textarea id="mgPaths" rows="4" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
-      <div style="grid-column:1/-1"><label class="sub">Excludes (one restic pattern per line)</label><textarea id="mgExcludes" rows="4" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
+      <div style="grid-column:1/-1"><label class="sub">Required paths (one per line, absolute). The client always backs these up; it can add its own paths but cannot remove these.</label><textarea id="mgPaths" rows="4" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
+      <div style="grid-column:1/-1"><label class="sub">Excludes (one restic pattern per line). Only these apply inside required paths; the client's own excludes only work below paths it added itself.</label><textarea id="mgExcludes" rows="4" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
       <div style="grid-column:1/-1"><label class="sub">Exclude files on the client (one path per line)</label><textarea id="mgExFiles" rows="2" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
       <div><label class="sub">Schedule<span class="help" tabindex="0" data-tip="A daily time (21:00) or an interval (1h, 2h). Leave empty when a systemd timer runs the backups, or for manual only.">ⓘ</span></label><input id="mgSched" type="text" placeholder="2h or 21:00"></div>
       <div><label class="sub">Skip files larger than</label><input id="mgLarger" type="text" placeholder="e.g. 1G"></div>
@@ -438,6 +439,8 @@ async function refresh(){
     const keys = Object.keys(clients).sort();
     $("#clients").innerHTML = keys.length ? keys.map(k=>{
       const c = clients[k];
+      const compliance = (c.missing_paths&&c.missing_paths.length ? '<div><span class="badge b-bad" title="The newest backup does not cover a path this server requires">required path missing</span> <span class="sub mono">'+esc(c.missing_paths.join(", "))+'</span></div>' : '')
+        + (c.management_off ? '<div><span class="badge b-bad" title="Settings are saved here for this client, but it has remote management turned off and decides by itself what it backs up">management off on client</span></div>' : '');
       const never = !c.last_snapshot || String(c.last_snapshot).startsWith("0001");
       const st2 = (c.busy ? '<span class="badge b-warn" title="Reporting a backup or restore right now; progress is under Running backups">running now</span> ' : '')
         + (never ? '<span class="badge b-bad" title="Enrolled, but no backup has finished yet">no backup yet</span>'
@@ -460,7 +463,7 @@ async function refresh(){
           : '<span style="color:var(--bad)">✗ failed'+(o.consecutive_failures>1?(' ×'+o.consecutive_failures):'')+'</span><div class="sub" title="'+esc(raw).replace(/"/g,'&quot;')+'">'+esc(raw.slice(0,60))+'</div>';
       }
       return `<tr><td><span class="mono">${c.hostname}</span>${manageBtn}${seenLine}</td><td>${never?"never":fmt(c.last_snapshot)}</td>
-        <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}${anCell}</td><td>${runCell}</td></tr>`;
+        <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}${anCell}${compliance}</td><td>${runCell}</td></tr>`;
     }).join("") : '<tr><td colspan="7" class="sub">no client snapshots yet</td></tr>';
   }catch(e){ /* transient */ }
 
@@ -581,11 +584,18 @@ async function openManage(host){
   $("#mgNice").value=s.nice||0; $("#mgIonice").value=s.ionice_class||""; $("#mgReadConc").value=s.read_concurrency||0;
   $("#mgCaches").checked=!!s.exclude_caches; $("#mgNoScan").checked=!!s.no_scan;
   let state;
-  if(!seen) state="This client has not checked in yet (needs hoard-agent 0.32 or newer). Settings saved here wait for it.";
+  if(!seen) state="This client has not checked in yet (needs hoard-agent 0.33 or newer). Settings saved here wait for it.";
   else if(!info.managed) state="Remote management is OFF on this client, so it will ignore settings saved here. Turn it on there with: hoard-agent manage on (then restart the agent). Shown below is what it is running now.";
   else if(j.pending) state="Saved settings (version "+j.desired_version+") are waiting for the client to fetch them; it last checked in "+age(info.seen_at)+" ago and has applied version "+(info.applied_version||0)+".";
   else state="In sync: the client checked in "+age(info.seen_at)+" ago"+(j.desired?" and runs version "+j.desired_version+" of the settings saved here.":" and runs its own local settings, shown below.");
   $("#mgState").textContent=state;
+  // What the client adds on its own, beyond what is required here.
+  const loc=info.settings||{}, req=(j.desired||{}).paths||[];
+  const extra=(loc.paths||[]).filter(p=>!req.includes(p));
+  $("#mgLocal").innerHTML = !seen ? "" :
+    "<b>Added on the client itself:</b> "+(extra.length?extra.map(esc).join(", "):"no extra paths")
+    +((loc.excludes||[]).length?" · its own excludes: "+loc.excludes.map(esc).join(", "):"")
+    +((info.ignored_excludes||[]).length?"<br><span style='color:var(--bad)'>Ignored on the client because they could reach a required path: "+info.ignored_excludes.map(esc).join(", ")+"</span>":"");
   $("#manageCard").scrollIntoView({block:"center"});
 }
 async function saveManage(){

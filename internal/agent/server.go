@@ -84,6 +84,11 @@ type statusResponse struct {
 	Live    Live       `json:"live"`
 	Now     time.Time  `json:"now"`
 	NextRun *time.Time `json:"next_run,omitempty"`
+	// Effective is what backups run with when the server manages this agent
+	// (its required settings combined with the local ones); IgnoredExcludes
+	// are local patterns left out because they could reach a required path.
+	Effective       *Config  `json:"effective,omitempty"`
+	IgnoredExcludes []string `json:"ignored_excludes,omitempty"`
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +101,10 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		LastRun: last,
 		Live:    s.agent.Live(),
 		Now:     now,
+	}
+	if c := s.agent.GetConfig(); c.RemoteManagement && c.Managed != nil {
+		eff, ignored := s.agent.Effective()
+		resp.Effective, resp.IgnoredExcludes = &eff, ignored
 	}
 	if next, err := s.agent.NextRun(now); err == nil && !next.IsZero() {
 		if next.Before(now) {

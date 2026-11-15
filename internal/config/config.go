@@ -80,6 +80,9 @@ type Client struct {
 	// client can tell a new push from one it already applied.
 	Managed        *ManagedSettings `json:"managed,omitempty"`
 	ManagedVersion int              `json:"managed_version,omitempty"`
+	// ManagedAt is when those settings were last saved. Only backups taken
+	// after it are checked against the required paths.
+	ManagedAt time.Time `json:"managed_at,omitzero"`
 }
 
 // ReposDir is where per-client repositories live: next to the shared hot repo.

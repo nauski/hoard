@@ -106,3 +106,68 @@ func TestPerClientRepos(t *testing.T) {
 		t.Fatalf("deleting vm's snapshot touched laptop's repo: %v", got)
 	}
 }
+
+// TestRequiredPathCompliance: the server flags and alerts when a managed
+// client's newest backup does not cover a required path.
+func TestRequiredPathCompliance(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not on PATH")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	a, b := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
+	for _, d := range []string{a, b} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "f"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &config.Config{
+		Hot: config.Repo{Repository: filepath.Join(dir, "hot"), Password: "shared"},
+		Clients: map[string]config.Client{"vm": {
+			Password: "vm-pw", HTTPPassword: "x",
+			Managed: &config.ManagedSettings{Paths: []string{a, b}}, ManagedVersion: 1,
+		}},
+	}
+	cfg := config.NewStore(c, "")
+	vm := restic.New("restic", c.ClientRepo("vm"))
+	if err := vm.InitLike(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := state.Load("")
+	s := New(cfg, "restic", st, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	note := &captureNotifier{}
+	s.SetNotifier(note)
+	alerts := func() int { note.mu.Lock(); defer note.mu.Unlock(); return len(note.titles) }
+
+	// Compliant backup: both required paths.
+	if _, _, err := vm.Backup(ctx, []string{a, b}, nil, "vm", nil, restic.BackupHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	s.RefreshClients(ctx)
+	if m := s.store.Snapshot().Clients["vm"].MissingPaths; len(m) != 0 || alerts() != 0 {
+		t.Fatalf("compliant backup flagged: %v, alerts %d", m, alerts())
+	}
+	// The client drops a required path.
+	if _, _, err := vm.Backup(ctx, []string{a}, nil, "vm", nil, restic.BackupHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	s.RefreshClients(ctx)
+	if m := s.store.Snapshot().Clients["vm"].MissingPaths; len(m) != 1 || m[0] != b {
+		t.Fatalf("missing = %v, want [%s]", m, b)
+	}
+	s.RefreshClients(ctx) // no repeat alert
+	if alerts() != 1 {
+		t.Fatalf("%d alerts, want exactly 1", alerts())
+	}
+	// Back in line: the flag clears.
+	if _, _, err := vm.Backup(ctx, []string{a, b}, nil, "vm", nil, restic.BackupHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	s.RefreshClients(ctx)
+	if m := s.store.Snapshot().Clients["vm"].MissingPaths; len(m) != 0 {
+		t.Fatalf("flag did not clear: %v", m)
+	}
+}

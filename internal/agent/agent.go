@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -73,11 +74,16 @@ type Config struct {
 	// speed (KiB/s); 0 = unlimited.
 	LimitUploadKiBps   int `json:"limit_upload_kibps"`
 	LimitDownloadKiBps int `json:"limit_download_kibps"`
-	// RemoteManagement lets the hoard server's dashboard change this agent's
-	// backup settings (paths, excludes, schedule, priority) and start a backup.
-	// Off by default; turn it on locally with `hoard-agent manage on`. The
-	// server can never change the repository, password file or server address.
+	// RemoteManagement lets the hoard server's dashboard dictate what this
+	// agent backs up and when, and start a backup. Off by default; turn it on
+	// locally with `hoard-agent manage on`. The server can never change the
+	// repository, password file or server address.
 	RemoteManagement bool `json:"remote_management,omitempty"`
+	// Managed is the server's last settings push, kept verbatim. While remote
+	// management is on it is a floor: its paths are always backed up and this
+	// machine can only add to them (see effective). The fields above stay
+	// this machine's own additions and are never overwritten by the server.
+	Managed *config.ManagedSettings `json:"managed,omitempty"`
 	// ManagedVersion is the last settings push from the server that was applied.
 	ManagedVersion int `json:"managed_version,omitempty"`
 	// NotifyDesktop controls whether desktop notifications are sent on backup completion.
@@ -365,6 +371,90 @@ func (a *Agent) backupOutcome() *reportOutcome {
 	return &reportOutcome{OK: rr.OK, Message: rr.Message}
 }
 
+// effective returns the settings a backup actually runs with, plus the local
+// excludes that were left out. Without remote management that is the config
+// as written. With it, the server's settings are a floor this machine cannot
+// lower:
+//
+//   - paths: the server's required paths plus the local ones;
+//   - excludes: the server's, plus only those local patterns that lie below a
+//     local path which has no required path at or below it. Anything else
+//     could cut into a required path, so it is ignored;
+//   - exclude files, cache/marker/size exclusions: the server's only, because
+//     they apply to every path;
+//   - schedule: the server's when it sets one;
+//   - priority knobs: the server's when set, else local.
+func (c Config) effective() (Config, []string) {
+	m := c.Managed
+	if !c.RemoteManagement || m == nil {
+		return c, nil
+	}
+	e := c
+	e.Paths = append([]string(nil), m.Paths...)
+	var extras []string // local paths that add something and cannot affect a required one
+	for _, p := range c.Paths {
+		if !slices.Contains(e.Paths, p) {
+			e.Paths = append(e.Paths, p)
+		}
+		clean := true
+		for _, r := range m.Paths {
+			if within(p, r) || within(r, p) {
+				clean = false
+			}
+		}
+		if clean {
+			extras = append(extras, p)
+		}
+	}
+	e.Excludes = append([]string(nil), m.Excludes...)
+	var ignored []string
+	for _, x := range c.Excludes {
+		ok := false
+		for _, p := range extras {
+			if strings.HasPrefix(x, strings.TrimRight(p, "/")+"/") {
+				ok = true
+			}
+		}
+		if ok {
+			e.Excludes = append(e.Excludes, x)
+		} else {
+			ignored = append(ignored, x)
+		}
+	}
+	e.ExcludeFiles, e.ExcludeIfPresent = m.ExcludeFiles, m.ExcludeIfPresent
+	e.ExcludeLargerThan, e.ExcludeCaches = m.ExcludeLargerThan, m.ExcludeCaches
+	if m.Schedule != "" {
+		e.Schedule = m.Schedule
+	}
+	if m.NoScan {
+		e.NoScan = true
+	}
+	if m.ReadConcurrency > 0 {
+		e.ReadConcurrency = m.ReadConcurrency
+	}
+	if m.Nice > 0 {
+		e.Nice = m.Nice
+	}
+	if m.IONiceClass != "" {
+		e.IONiceClass = m.IONiceClass
+	}
+	return e, ignored
+}
+
+// within reports whether path p is dir itself or lies below it.
+func within(p, dir string) bool {
+	p, dir = strings.TrimRight(p, "/"), strings.TrimRight(dir, "/")
+	return p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+// Effective returns the settings backups run with right now and the local
+// exclude patterns ignored because they could reach a server-required path.
+func (a *Agent) Effective() (Config, []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.effective()
+}
+
 // managedSettings returns the part of the config the server may manage.
 func (c Config) managedSettings() config.ManagedSettings {
 	return config.ManagedSettings{
@@ -373,6 +463,11 @@ func (c Config) managedSettings() config.ManagedSettings {
 		ExcludeCaches: c.ExcludeCaches, Schedule: c.Schedule, NoScan: c.NoScan,
 		ReadConcurrency: c.ReadConcurrency, Nice: c.Nice, IONiceClass: c.IONiceClass,
 	}
+}
+
+func ignoredExcludes(c Config) []string {
+	_, ignored := c.effective()
+	return ignored
 }
 
 // SetRemoteManagement turns server-side management of this agent on or off.
@@ -399,11 +494,12 @@ func (a *Agent) CheckIn(ctx context.Context, allowBackup bool) (startedBackup bo
 		cfg := a.GetConfig()
 		live := a.Live()
 		return a.reportFull(client, base, &live, nil, map[string]any{
-			"checkin":         true,
-			"managed":         cfg.RemoteManagement,
-			"applied_version": cfg.ManagedVersion,
-			"settings":        cfg.managedSettings(),
-			"agent_version":   version.Version,
+			"checkin":          true,
+			"managed":          cfg.RemoteManagement,
+			"applied_version":  cfg.ManagedVersion,
+			"settings":         cfg.managedSettings(), // this machine's own additions
+			"ignored_excludes": ignoredExcludes(cfg),
+			"agent_version":    version.Version,
 		})
 	}
 	reply := send()
@@ -460,13 +556,11 @@ func (a *Agent) applyManaged(ver int, settingsJSON, mac string) error {
 	if err := m.Validate(); err != nil {
 		return err
 	}
-	c := &a.cfg
-	c.Paths, c.Excludes, c.ExcludeFiles = cleanList(m.Paths), cleanList(m.Excludes), cleanList(m.ExcludeFiles)
-	c.ExcludeIfPresent, c.ExcludeLargerThan, c.ExcludeCaches = cleanList(m.ExcludeIfPresent), m.ExcludeLargerThan, m.ExcludeCaches
-	c.Schedule, c.NoScan, c.ReadConcurrency = m.Schedule, m.NoScan, m.ReadConcurrency
-	c.Nice, c.IONiceClass = m.Nice, m.IONiceClass
-	c.ManagedVersion = ver
-	a.log.Info("applied settings from the server dashboard", "version", ver, "paths", len(c.Paths), "schedule", c.Schedule)
+	m.Paths, m.Excludes, m.ExcludeFiles = cleanList(m.Paths), cleanList(m.Excludes), cleanList(m.ExcludeFiles)
+	m.ExcludeIfPresent = cleanList(m.ExcludeIfPresent)
+	// Kept apart from this machine's own settings, which stay as they are.
+	a.cfg.Managed, a.cfg.ManagedVersion = &m, ver
+	a.log.Info("applied settings from the server dashboard", "version", ver, "required_paths", len(m.Paths), "schedule", m.Schedule)
 	return a.persist()
 }
 
@@ -678,7 +772,8 @@ func (a *Agent) resticClient() (*restic.Client, error) {
 	if a.canRetryLock() {
 		cl.WithRetryLock(lockWait)
 	}
-	cl.WithBackupArgs(a.cfg.backupArgs()).WithWrapper(a.cfg.wrapper(exec.LookPath, a.log))
+	eff, _ := a.cfg.effective()
+	cl.WithBackupArgs(eff.backupArgs()).WithWrapper(eff.wrapper(exec.LookPath, a.log))
 	return cl, nil
 }
 
@@ -737,7 +832,7 @@ func (a *Agent) DryRun(ctx context.Context) (*restic.BackupResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg := a.GetConfig()
+	cfg, _ := a.Effective()
 	cl.WithBackupArgs(append(cfg.backupArgs(), "--dry-run"))
 	res, _, err := cl.Backup(ctx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, restic.BackupHooks{})
 	return res, err
@@ -783,8 +878,12 @@ func (a *Agent) BackupPin(ctx context.Context, note string) error {
 	a.pauseStart = time.Time{}
 	a.activity = nil
 	a.progress = nil
-	cfg := a.cfg
+	cfg, ignored := a.cfg.effective()
 	a.mu.Unlock()
+	if len(ignored) > 0 {
+		a.log.Warn("local excludes ignored: they could reach a path the server requires; move them under a path only this machine adds, or set them on the server",
+			"patterns", strings.Join(ignored, " "))
+	}
 	a.saveLastStart(time.Now())
 
 	reported := make(chan struct{})

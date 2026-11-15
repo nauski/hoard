@@ -102,3 +102,18 @@ func TestAnomalyTriggered(t *testing.T) {
 		t.Error("zero-value Anomaly must be off")
 	}
 }
+
+func TestManagedMissingFrom(t *testing.T) {
+	m := ManagedSettings{Paths: []string{"/home/me", "/etc/", "/srv/data"}}
+	if got := m.MissingFrom([]string{"/home/me", "/etc", "/srv/data", "/extra"}); len(got) != 0 {
+		t.Fatalf("all covered, got missing %v", got)
+	}
+	// A snapshot of a parent directory covers the required path.
+	if got := m.MissingFrom([]string{"/home", "/etc", "/srv"}); len(got) != 0 {
+		t.Fatalf("parents cover, got missing %v", got)
+	}
+	got := m.MissingFrom([]string{"/home/me", "/srv/database"})
+	if len(got) != 2 || got[0] != "/etc" || got[1] != "/srv/data" {
+		t.Fatalf("missing = %v, want [/etc /srv/data]", got)
+	}
+}

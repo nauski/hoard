@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// ManagedSettings is everything the server dashboard may set on a client that
-// has opted in to remote management. It is deliberately a short list: what to
-// back up, when, and how gently. Where backups go (repository, password file,
+// ManagedSettings is what the server dashboard requires of a client that has
+// opted in to remote management. It is a floor, not a replacement: the client
+// always backs up these paths and may add its own, but cannot remove or
+// exclude its way out of them. It is deliberately a short list: what to back
+// up, when, and how gently. Where backups go (repository, password file,
 // server address, host name) is never part of it, so a push from the server
 // cannot redirect a client's backups or make it trust another server.
 type ManagedSettings struct {
@@ -49,6 +52,26 @@ func (m ManagedSettings) Validate() error {
 		return fmt.Errorf("nice must be 0-19 and read_concurrency must not be negative")
 	}
 	return nil
+}
+
+// MissingFrom returns the required paths that a snapshot covering
+// snapshotPaths does not include. A snapshot of a parent directory covers it.
+func (m ManagedSettings) MissingFrom(snapshotPaths []string) []string {
+	var missing []string
+	for _, req := range m.Paths {
+		req = filepath.Clean(req)
+		covered := false
+		for _, p := range snapshotPaths {
+			p = filepath.Clean(p)
+			if req == p || p == "/" || strings.HasPrefix(req, p+"/") {
+				covered = true
+			}
+		}
+		if !covered {
+			missing = append(missing, req)
+		}
+	}
+	return missing
 }
 
 // SignManaged authenticates a settings push from server to client. The key is

@@ -479,6 +479,16 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 				}
 			}
 		}
+		// Does the newest backup cover everything the dashboard requires of this
+		// client? Only backups taken after the requirement was saved count.
+		if cl, ok := cfg.Clients[host]; ok && cl.Managed != nil && sn.Time.After(cl.ManagedAt) {
+			c.MissingPaths = cl.Managed.MissingFrom(sn.Paths)
+			if len(c.MissingPaths) > 0 && len(prev.Clients[host].MissingPaths) == 0 {
+				s.alert("a client is not backing up a required path", fmt.Sprintf(
+					"%s: its latest backup (%s) does not include %s, which the server requires. The client may have remote management turned off or its settings changed.",
+					host, sn.ShortID, strings.Join(c.MissingPaths, ", ")))
+			}
+		}
 		if c.Anomaly != nil && !c.Anomaly.Held {
 			s.hold(ctx, c.Anomaly)
 		}

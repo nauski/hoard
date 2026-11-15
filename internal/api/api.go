@@ -157,6 +157,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if info := s.store.ClientInfoFor(h); !info.SeenAt.IsZero() {
 			seen := info.SeenAt
 			c.AgentVersion, c.Managed, c.SeenAt = info.AgentVersion, info.Managed, &seen
+			c.ManagementOff = !info.Managed && cfg.Clients[h].Managed != nil
 			clients[h] = c
 		}
 	}
