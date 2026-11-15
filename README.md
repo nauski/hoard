@@ -281,8 +281,22 @@ All fields are in `config.example.json`. Highlights:
 - `schedule.verify` — `"HH:MM"` for the restore fire-drill (empty = disabled).
 - `schedule.stale_after` — e.g. `"26h"`; a client with no newer snapshot is flagged
   and (if `alert.on_stale`) triggers a one-shot alert on the transition to stale.
-- `retention.keep_*` — passed straight to `restic forget --prune` on the cold repo;
-  the dashboard's **retention preview** dry-runs the effect before you save.
+- `schedule.stale_after_hosts` — per-host overrides, e.g. `{"hourly-vm": "3h"}`.
+- `retention.keep_*` — `keep_last/hourly/daily/weekly/monthly/yearly` and
+  `keep_within` (`"48h"`, `"7d"`), passed to `restic forget` host by host, then one
+  `prune`. The dashboard's **retention preview** dry-runs the effect before you save.
+- `retention.hosts` — per-host policies that replace the default for the named
+  hosts, e.g. `{"hourly-vm": {"keep_within": "48h", "keep_daily": 14}}`.
+- `retention.apply_to_hot` — off by default: retention then runs only on the
+  offsite repo and the hot repo keeps every snapshot. Turn it on to also apply
+  retention to the hot repo before each mirror; the first run after that removes
+  whatever old snapshots have accumulated there (preview shows them first). With
+  it off, snapshots the offsite repo has forgotten but hot still holds are copied
+  again at the next mirror, so turn it on if you want offsite retention to stick.
+- `mirror.exclude_hosts` — hosts that are never copied offsite ("hot only" on the
+  dashboard, and listed in the recovery kit). Snapshots of such a host that were
+  mirrored before you excluded it stay offsite until retention or a delete
+  removes them.
 - `cold.limit_upload_kibps` / `limit_download_kibps` — transfer caps in KiB/s for
   the offsite mirror (`0` = unlimited); each agent has the same knobs for its push.
 - `alert.webhook_url` — a JSON POST target. The payload carries `title`, `content`,
@@ -372,5 +386,5 @@ webhook **and email** alerting with a failure threshold, **bandwidth caps**,
 server jobs** are all implemented and verified end-to-end against a live TrueNAS +
 IDrive e2 setup.
 
-Roadmap: authentication, per-client retention, Prometheus `/metrics`, and a
+Roadmap: authentication, Prometheus `/metrics`, and a
 NixOS module for running the server on non-container hosts.

@@ -52,6 +52,10 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 		b.WriteString("  restic snapshots                      # list what's there\n")
 		b.WriteString("  restic restore latest --target ./restored\n\n")
 	}
+	if len(c.Mirror.ExcludeHosts) > 0 {
+		fmt.Fprintf(&b, "NOT OFFSITE: these hosts are kept hot-only and are never mirrored,\nso they can only be restored from the local repo below: %s\n\n",
+			strings.Join(c.Mirror.ExcludeHosts, ", "))
+	}
 
 	b.WriteString("==================================================================\n")
 	b.WriteString("SECONDARY — LOCAL (hot / NAS rest-server). Only if the NAS dataset\n")

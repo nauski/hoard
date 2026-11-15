@@ -403,3 +403,75 @@ func TestBackupWrongPasswordMessage(t *testing.T) {
 		t.Fatalf("err = %v, want it to mention wrong repository password", err)
 	}
 }
+
+// TestPerHostRetentionAndCopyFilter: host "vm" has its own policy (keep 2),
+// "desk" falls back to the default (keep 1); the copy filter mirrors only desk.
+func TestPerHostRetentionAndCopyFilter(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not on PATH")
+	}
+	ctx := context.Background()
+	hotRepo := config.Repo{Repository: t.TempDir(), Password: "test"}
+	hot := New("restic", hotRepo)
+	if err := hot.EnsureInit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte{byte('a' + i)}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range []string{"vm", "desk"} {
+			if _, _, err := hot.Backup(ctx, []string{src}, nil, h, nil, BackupHooks{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	policy := config.Retention{Last: 1, Hosts: map[string]config.Retention{"vm": {Last: 2}}}
+	count := func(c *Client) map[string]int {
+		snaps, err := c.Snapshots(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := map[string]int{}
+		for _, s := range snaps {
+			n[s.Hostname]++
+		}
+		return n
+	}
+
+	rm, err := hot.ForgetDryRun(ctx, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rm) != 3 { // vm loses 1, desk loses 2
+		t.Fatalf("dry-run would forget %d, want 3", len(rm))
+	}
+
+	// Copy only desk into a second repo, before retention touches hot.
+	cold := New("restic", config.Repo{Repository: t.TempDir(), Password: "test"})
+	if err := cold.EnsureInit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cold.CopyFrom(ctx, hotRepo, []string{"desk"}, StreamHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(cold); got["vm"] != 0 || got["desk"] != 3 {
+		t.Fatalf("cold after filtered copy = %v, want only desk x3", got)
+	}
+
+	if _, err := hot.ForgetPrune(ctx, policy, StreamHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(hot); got["vm"] != 2 || got["desk"] != 1 {
+		t.Fatalf("hot after retention = %v, want vm:2 desk:1", got)
+	}
+
+	// A policy with no keep rules must not delete anything.
+	if _, err := hot.ForgetPrune(ctx, config.Retention{}, StreamHooks{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(hot); got["vm"] != 2 || got["desk"] != 1 {
+		t.Fatalf("empty policy deleted snapshots: %v", got)
+	}
+}

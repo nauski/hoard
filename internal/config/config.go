@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"slices"
 	"time"
 )
 
@@ -24,8 +26,12 @@ type Config struct {
 	// Schedule controls when the recurring jobs run.
 	Schedule Schedule `json:"schedule"`
 
-	// Retention is applied to the cold repo after each mirror.
+	// Retention is applied to the cold repo after each mirror, and to the hot
+	// repo before it when Retention.ApplyToHot is set.
 	Retention Retention `json:"retention"`
+
+	// Mirror controls which hosts are copied hot -> cold.
+	Mirror Mirror `json:"mirror"`
 
 	// Alert is where failure/staleness notifications are sent.
 	Alert Alert `json:"alert"`
@@ -70,15 +76,69 @@ type Schedule struct {
 	CheckWeekday *int `json:"check_weekday"`
 	// StaleAfter marks a client repo stale if no new snapshot within this window.
 	StaleAfter Duration `json:"stale_after"`
+	// StaleAfterHosts overrides StaleAfter per hostname (e.g. an hourly host: "3h").
+	StaleAfterHosts map[string]Duration `json:"stale_after_hosts,omitempty"`
 }
 
-// Retention maps to `restic forget` flags applied to the cold repo.
+// StaleFor returns the staleness window for host.
+func (s Schedule) StaleFor(host string) time.Duration {
+	if d, ok := s.StaleAfterHosts[host]; ok {
+		return d.Std()
+	}
+	return s.StaleAfter.Std()
+}
+
+// Mirror selects what the hot -> cold copy includes.
+type Mirror struct {
+	// ExcludeHosts are never copied offsite ("hot only").
+	ExcludeHosts []string `json:"exclude_hosts,omitempty"`
+}
+
+// Excludes reports whether host is kept hot-only.
+func (m Mirror) Excludes(host string) bool { return slices.Contains(m.ExcludeHosts, host) }
+
+// Retention maps to `restic forget` flags. It is applied per host: Hosts
+// overrides the top-level policy for the named hostnames.
 type Retention struct {
 	Last    int `json:"keep_last"`
+	Hourly  int `json:"keep_hourly"`
 	Daily   int `json:"keep_daily"`
 	Weekly  int `json:"keep_weekly"`
 	Monthly int `json:"keep_monthly"`
 	Yearly  int `json:"keep_yearly"`
+	// Within keeps every snapshot newer than this restic duration ("48h", "7d",
+	// "1y6m"), relative to the host's latest snapshot.
+	Within string `json:"keep_within,omitempty"`
+	// ApplyToHot also applies retention (forget + prune) to the hot repo before
+	// each mirror. Off by default: the hot repo then keeps every snapshot.
+	// Only read on the top-level policy.
+	ApplyToHot bool `json:"apply_to_hot"`
+	// Hosts holds per-hostname policies that replace the top-level one. Only
+	// read on the top-level policy.
+	Hosts map[string]Retention `json:"hosts,omitempty"`
+}
+
+// For returns the policy that applies to host.
+func (r Retention) For(host string) Retention {
+	if h, ok := r.Hosts[host]; ok {
+		return h
+	}
+	return r
+}
+
+var resticDuration = regexp.MustCompile(`^(\d+[ymdh])+$`)
+
+// Validate checks the fields restic would otherwise reject mid-job.
+func (r Retention) Validate() error {
+	if r.Within != "" && !resticDuration.MatchString(r.Within) {
+		return fmt.Errorf("keep_within %q is not a restic duration like 48h, 7d or 1y6m", r.Within)
+	}
+	for h, p := range r.Hosts {
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("retention for host %s: %w", h, err)
+		}
+	}
+	return nil
 }
 
 // Alert configures outbound failure notifications via a generic webhook

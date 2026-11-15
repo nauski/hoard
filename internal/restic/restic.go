@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,10 +123,15 @@ func (c *Client) Snapshots(ctx context.Context) ([]Snapshot, error) {
 // Copy copies all snapshots from src into this (destination) repo. Requires
 // restic >= 0.14. Both repos' credentials are passed through env. Output is
 // streamed line-by-line through hooks so callers can show live progress.
-func (c *Client) CopyFrom(ctx context.Context, src config.Repo, hooks StreamHooks) (string, error) {
+//
+// hosts restricts the copy to those snapshot hostnames; empty copies every host.
+func (c *Client) CopyFrom(ctx context.Context, src config.Repo, hosts []string, hooks StreamHooks) (string, error) {
 	args := []string{
 		"copy",
 		"--from-repo", src.Repository,
+	}
+	for _, h := range hosts {
+		args = append(args, "--host", h)
 	}
 	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
 	env := append(cmd.Environ(), c.env()...)
@@ -472,6 +478,9 @@ func retentionArgs(r config.Retention) []string {
 	if r.Last > 0 {
 		a = append(a, "--keep-last", itoa(r.Last))
 	}
+	if r.Hourly > 0 {
+		a = append(a, "--keep-hourly", itoa(r.Hourly))
+	}
 	if r.Daily > 0 {
 		a = append(a, "--keep-daily", itoa(r.Daily))
 	}
@@ -484,40 +493,96 @@ func retentionArgs(r config.Retention) []string {
 	if r.Yearly > 0 {
 		a = append(a, "--keep-yearly", itoa(r.Yearly))
 	}
+	if r.Within != "" {
+		a = append(a, "--keep-within", r.Within)
+	}
 	return a
 }
 
-// ForgetPrune applies a retention policy and prunes unreferenced data.
-// Output is streamed line-by-line through hooks.
-func (c *Client) ForgetPrune(ctx context.Context, r config.Retention, hooks StreamHooks) (string, error) {
-	args := []string{"forget", "--prune"}
-	args = append(args, retentionArgs(r)...)
-	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
-	cmd.Env = append(cmd.Environ(), c.env()...)
-	return streamRun(cmd, hooks.dispatch)
-}
-
-// ForgetDryRun reports which snapshots the retention policy WOULD forget,
-// without touching the repo (--dry-run). Read-only.
-func (c *Client) ForgetDryRun(ctx context.Context, r config.Retention) ([]Snapshot, error) {
-	args := append([]string{"forget", "--dry-run", "--json"}, retentionArgs(r)...)
-	out, err := c.run(ctx, args...)
+// Hostnames returns the distinct snapshot hostnames in the repo, sorted.
+func (c *Client) Hostnames(ctx context.Context) ([]string, error) {
+	snaps, err := c.Snapshots(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// A repo with no snapshots produces empty output — nothing to forget.
-	if len(bytes.TrimSpace(out)) == 0 {
-		return nil, nil
+	var hosts []string
+	for _, s := range snaps {
+		if s.Hostname != "" && !slices.Contains(hosts, s.Hostname) {
+			hosts = append(hosts, s.Hostname)
+		}
 	}
-	var groups []struct {
-		Remove []Snapshot `json:"remove"`
+	slices.Sort(hosts)
+	return hosts, nil
+}
+
+// forgetArgs is the per-host forget invocation; nil when the host's policy
+// keeps nothing explicitly (restic refuses a forget with no policy, and we
+// never want "no policy" to mean "delete").
+func forgetArgs(r config.Retention, host string) []string {
+	keep := retentionArgs(r.For(host))
+	if len(keep) == 0 {
+		return nil
 	}
-	if err := json.Unmarshal(out, &groups); err != nil {
-		return nil, fmt.Errorf("parse forget: %w", err)
+	return append([]string{"forget", "--host", host, "--group-by", "host,paths"}, keep...)
+}
+
+// ForgetPrune applies the retention policy host by host (r.Hosts overrides
+// the default per hostname), then prunes unreferenced data once. Output is
+// streamed line-by-line through hooks.
+func (c *Client) ForgetPrune(ctx context.Context, r config.Retention, hooks StreamHooks) (string, error) {
+	hosts, err := c.Hostnames(ctx)
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	stream := func(args []string) error {
+		cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
+		cmd.Env = append(cmd.Environ(), c.env()...)
+		o, err := streamRun(cmd, hooks.dispatch)
+		out.WriteString(o)
+		out.WriteString("\n")
+		return err
+	}
+	for _, h := range hosts {
+		if args := forgetArgs(r, h); args != nil {
+			if err := stream(args); err != nil {
+				return out.String(), err
+			}
+		}
+	}
+	err = stream([]string{"prune"})
+	return out.String(), err
+}
+
+// ForgetDryRun reports which snapshots the retention policy WOULD forget,
+// host by host, without touching the repo (--dry-run). Read-only.
+func (c *Client) ForgetDryRun(ctx context.Context, r config.Retention) ([]Snapshot, error) {
+	hosts, err := c.Hostnames(ctx)
+	if err != nil {
+		return nil, err
 	}
 	var rm []Snapshot
-	for _, g := range groups {
-		rm = append(rm, g.Remove...)
+	for _, h := range hosts {
+		args := forgetArgs(r, h)
+		if args == nil {
+			continue
+		}
+		out, err := c.run(ctx, append(args, "--dry-run", "--json")...)
+		if err != nil {
+			return nil, err
+		}
+		if len(bytes.TrimSpace(out)) == 0 {
+			continue
+		}
+		var groups []struct {
+			Remove []Snapshot `json:"remove"`
+		}
+		if err := json.Unmarshal(out, &groups); err != nil {
+			return nil, fmt.Errorf("parse forget: %w", err)
+		}
+		for _, g := range groups {
+			rm = append(rm, g.Remove...)
+		}
 	}
 	return rm, nil
 }

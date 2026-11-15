@@ -170,16 +170,23 @@
       <div><label class="sub">Integrity check at (HH:MM)</label><input id="cfgCheck" type="text" placeholder="04:00"></div>
       <div><label class="sub">Check weekday (0=Sun…6=Sat, blank=daily)</label><input id="cfgWeekday" type="text" placeholder="0"></div>
       <div><label class="sub">Stale after (e.g. 26h)</label><input id="cfgStale" type="text" placeholder="26h"></div>
+      <div><label class="sub">Stale after, per host<span class="help" tabindex="0" data-tip="Overrides for single hosts, e.g. an hourly host: juha-work=3h, laptop=72h">ⓘ</span></label><input id="cfgStaleHosts" type="text" placeholder="host=3h, other=72h"></div>
+      <div><label class="sub">Hot-only hosts<span class="help" tabindex="0" data-tip="Comma-separated hostnames that are never mirrored offsite. Their backups exist only on this server.">ⓘ</span></label><input id="cfgHotOnly" type="text" placeholder="host1, host2"></div>
       <div><label class="sub">Verify (restore fire-drill, HH:MM — blank disables)</label><input id="cfgVerify" type="text" placeholder="03:30"></div>
     </div>
     <div class="sub" style="margin:12px 0 8px">Retention — keep<span class="help" tabindex="0" data-tip="How many backups to keep (by age). Preview shows exactly which snapshots a policy would delete before you apply it.">ⓘ</span></div>
     <div class="setgrid">
       <div><label class="sub">last</label><input id="cfgKLast" type="text"></div>
+      <div><label class="sub">hourly</label><input id="cfgKHourly" type="text"></div>
       <div><label class="sub">daily</label><input id="cfgKDaily" type="text"></div>
       <div><label class="sub">weekly</label><input id="cfgKWeekly" type="text"></div>
       <div><label class="sub">monthly</label><input id="cfgKMonthly" type="text"></div>
       <div><label class="sub">yearly</label><input id="cfgKYearly" type="text"></div>
+      <div><label class="sub">everything within<span class="help" tabindex="0" data-tip="Keep every snapshot newer than this, e.g. 48h, 7d, 1y6m. Blank = off.">ⓘ</span></label><input id="cfgKWithin" type="text" placeholder="48h"></div>
     </div>
+    <div style="margin-top:8px"><label class="sub">Per-host policies (JSON, replace the policy above for the named hosts)<span class="help" tabindex="0" data-tip='Example: {"juha-work":{"keep_within":"48h","keep_daily":14,"keep_weekly":8,"keep_monthly":6}}'>ⓘ</span></label>
+      <textarea id="cfgRetHosts" rows="3" style="width:100%;font-family:ui-monospace,monospace" placeholder='{"host":{"keep_within":"48h","keep_daily":14}}'></textarea></div>
+    <div style="margin-top:6px"><label><input type="checkbox" id="cfgRetHot"> also apply retention to the hot repo (off = the hot repo keeps every snapshot; turning it on deletes old snapshots there at the next mirror)</label></div>
     <div class="bar" style="margin-top:8px"><button class="secondary" onclick="previewRetention()">Preview</button></div>
     <div class="sub" id="retMsg" style="margin-top:6px"></div>
     <div class="sub" style="margin:12px 0 8px">Alerts</div>
@@ -311,7 +318,7 @@ async function refresh(){
     // server job's result (mirror/check/prune/verify — restore has its own
     // "Running backups" panel below).
     (function(){
-      const labels = {mirror:"Mirroring to e2", check:"Checking e2 integrity", prune:"Applying retention", verify:"Verifying a restore", restore:"Restoring"};
+      const labels = {mirror:"Mirroring to e2", check:"Checking e2 integrity", prune:"Applying retention", "prune-hot":"Applying retention to the hot repo", verify:"Verifying a restore", restore:"Restoring"};
       const el = $("#serverJob");
       if(!el) return;
       if(run){
@@ -391,7 +398,8 @@ async function refresh(){
     const keys = Object.keys(clients).sort();
     $("#clients").innerHTML = keys.length ? keys.map(k=>{
       const c = clients[k];
-      const st2 = c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>';
+      const st2 = (c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>')
+        + (c.hot_only ? ' <span class="badge b-idle" title="Excluded from the offsite mirror: this host exists only on this server">hot only</span>' : '');
       const o = (st.outcomes||{})[c.hostname];
       let runCell = '<span class="sub">—</span>';
       if(o){
@@ -635,6 +643,12 @@ async function loadConfig(){
     $("#cfgVerify").value=c.schedule.verify||"";
     $("#cfgStale").value=c.schedule.stale_after||"";
     $("#cfgKLast").value=c.retention.keep_last||0;
+    $("#cfgKHourly").value=c.retention.keep_hourly||0;
+    $("#cfgKWithin").value=c.retention.keep_within||"";
+    $("#cfgRetHosts").value=c.retention.hosts?JSON.stringify(c.retention.hosts,null,1):"";
+    $("#cfgRetHot").checked=!!c.retention.apply_to_hot;
+    $("#cfgStaleHosts").value=Object.entries(c.schedule.stale_after_hosts||{}).map(([h,d])=>h+"="+d).join(", ");
+    $("#cfgHotOnly").value=((c.mirror||{}).exclude_hosts||[]).join(", ");
     $("#cfgKDaily").value=c.retention.keep_daily||0;
     $("#cfgKWeekly").value=c.retention.keep_weekly||0;
     $("#cfgKMonthly").value=c.retention.keep_monthly||0;
@@ -678,14 +692,29 @@ async function mintEnroll(){
     el.innerHTML = "Run this on the new machine (expires in 15 min):<br><code style=\"user-select:all;word-break:break-all\">" + esc(cmd) + "</code>";
   }catch(e){ el.textContent = "error generating token"; }
 }
+// The retention form as the API's retention object; throws on bad per-host JSON.
+function retentionForm(){
+  const num=id=>{const n=parseInt($("#"+id).value,10);return isNaN(n)?0:n;};
+  const r={keep_last:num("cfgKLast"),keep_hourly:num("cfgKHourly"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),
+    keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly"),keep_within:$("#cfgKWithin").value.trim(),
+    apply_to_hot:$("#cfgRetHot").checked};
+  const h=$("#cfgRetHosts").value.trim();
+  if(h) r.hosts=JSON.parse(h);
+  return r;
+}
 async function saveConfig(){
   const wd=$("#cfgWeekday").value.trim();
-  const num=id=>{const n=parseInt($("#"+id).value,10);return isNaN(n)?0:n;};
+  let retention;
+  try{ retention=retentionForm(); }catch(e){ $("#cfgMsg").textContent="error: per-host policies are not valid JSON"; return false; }
+  const staleHosts={};
+  $("#cfgStaleHosts").value.split(",").map(x=>x.trim()).filter(Boolean).forEach(x=>{const i=x.lastIndexOf("="); if(i>0) staleHosts[x.slice(0,i).trim()]=x.slice(i+1).trim();});
   const body={
     schedule:{mirror:$("#cfgMirror").value.trim(),check:$("#cfgCheck").value.trim(),
       check_weekday: wd===""?null:parseInt(wd,10), stale_after:$("#cfgStale").value.trim(),
+      stale_after_hosts:staleHosts,
       verify:$("#cfgVerify").value.trim()},
-    retention:{keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")},
+    retention,
+    mirror:{exclude_hosts:$("#cfgHotOnly").value.split(",").map(x=>x.trim()).filter(Boolean)},
     alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked,
       on_failure:$("#cfgOnFailure").checked,failure_threshold:(parseInt($("#cfgFailThresh").value,10)||3)},
     smtp:{host:$("#cfgSmtpHost").value.trim(),port:$("#cfgSmtpPort").value.trim(),username:$("#cfgSmtpUser").value.trim(),
@@ -704,17 +733,22 @@ async function saveConfig(){
 // Read-only dry-run against the cold repo's actual snapshots — lets you see the
 // blast radius of a retention change before saving it.
 async function previewRetention(){
-  const num=id=>{const n=parseInt($("#"+id).value,10);return isNaN(n)?0:n;};
-  const body={keep_last:num("cfgKLast"),keep_daily:num("cfgKDaily"),keep_weekly:num("cfgKWeekly"),keep_monthly:num("cfgKMonthly"),keep_yearly:num("cfgKYearly")};
+  let body;
+  try{ body=retentionForm(); }catch(e){ $("#retMsg").textContent="error: per-host policies are not valid JSON"; return; }
   $("#retMsg").textContent="checking…";
   try{
     const r=await fetch("/api/config/retention-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const j=await r.json();
     if(j.error){ $("#retMsg").textContent="error: "+j.error; return; }
-    if(!j.count){ $("#retMsg").textContent="This policy would forget 0 snapshots."; return; }
-    const snaps=j.snapshots||[];
-    const list=snaps.slice(0,20).map(s=>esc(s.short_id)+" · "+esc(s.hostname||"")+" · "+new Date(s.time).toLocaleString()).join("<br>");
-    $("#retMsg").innerHTML="<b>Would forget "+j.count+" snapshot"+(j.count>1?"s":"")+":</b><br>"+list+(j.count>20?"<br>…":"");
+    const part=(where,count,snaps)=>{
+      if(count===undefined) return "";
+      if(!count) return "<b>"+where+":</b> would forget 0 snapshots.<br>";
+      const byHost={}; (snaps||[]).forEach(s=>{byHost[s.hostname||"?"]=(byHost[s.hostname||"?"]||0)+1;});
+      const hosts=Object.keys(byHost).sort().map(h=>esc(h)+": "+byHost[h]).join(", ");
+      const list=(snaps||[]).slice(0,20).map(s=>esc(s.short_id)+" · "+esc(s.hostname||"")+" · "+new Date(s.time).toLocaleString()).join("<br>");
+      return "<b>"+where+": would forget "+count+" snapshot"+(count>1?"s":"")+"</b> ("+hosts+")<br>"+list+(count>20?"<br>…":"")+"<br>";
+    };
+    $("#retMsg").innerHTML=part("Offsite (e2)",j.count,j.snapshots)+part("Hot repo",j.hot_count,j.hot_snapshots);
   }catch(e){ $("#retMsg").textContent="preview failed"; }
 }
 // Test/Initialize always persist the current form FIRST, so they act on exactly

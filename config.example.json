@@ -21,15 +21,26 @@
     "check": "04:00",
     "check_weekday": 0,
     "verify": "05:00",
-    "stale_after": "26h"
+    "stale_after": "26h",
+    "stale_after_hosts": { "hourly-vm": "3h" }
   },
 
   "retention": {
     "keep_last": 3,
+    "keep_hourly": 0,
     "keep_daily": 7,
     "keep_weekly": 4,
     "keep_monthly": 6,
-    "keep_yearly": 1
+    "keep_yearly": 1,
+    "keep_within": "",
+    "apply_to_hot": false,
+    "hosts": {
+      "hourly-vm": { "keep_within": "48h", "keep_daily": 14, "keep_weekly": 8, "keep_monthly": 6 }
+    }
+  },
+
+  "mirror": {
+    "exclude_hosts": ["hourly-vm"]
   },
 
   "alert": {

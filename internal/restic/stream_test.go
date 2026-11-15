@@ -84,7 +84,7 @@ func TestCopyFromStreams(t *testing.T) {
 		},
 	}
 
-	out, err := dst.CopyFrom(ctx, src.repo, hooks)
+	out, err := dst.CopyFrom(ctx, src.repo, nil, hooks)
 	if err != nil {
 		t.Fatalf("copy: %v", err)
 	}

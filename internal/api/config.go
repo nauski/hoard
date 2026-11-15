@@ -35,6 +35,7 @@ type smtpView struct {
 type configResponse struct {
 	Schedule       config.Schedule  `json:"schedule"`
 	Retention      config.Retention `json:"retention"`
+	Mirror         config.Mirror    `json:"mirror"`
 	Alert          config.Alert     `json:"alert"`
 	HotRepo        string           `json:"hot_repo"`
 	HotPasswordSet bool             `json:"hot_password_set"`
@@ -48,6 +49,7 @@ func (s *Server) configView() configResponse {
 	return configResponse{
 		Schedule:       c.Schedule,
 		Retention:      c.Retention,
+		Mirror:         c.Mirror,
 		Alert:          c.Alert,
 		HotRepo:        c.Hot.Repository,
 		HotPasswordSet: c.Hot.Password != "",
@@ -80,6 +82,7 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Schedule  *config.Schedule  `json:"schedule"`
 		Retention *config.Retention `json:"retention"`
+		Mirror    *config.Mirror    `json:"mirror"`
 		Alert     *config.Alert     `json:"alert"`
 		Cold      *struct {
 			Repository         *string `json:"repository"`
@@ -97,7 +100,16 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if req.Retention != nil {
+		if err := req.Retention.Validate(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	err := s.cfg.Update(func(c *config.Config) {
+		if req.Mirror != nil {
+			c.Mirror = *req.Mirror
+		}
 		if req.Schedule != nil {
 			c.Schedule = *req.Schedule
 		}
@@ -159,6 +171,8 @@ func (s *Server) handleTestCold(w http.ResponseWriter, r *http.Request) {
 
 // handleRetentionPreview reports which cold-repo snapshots the POSTed retention
 // policy would forget — a read-only dry-run so the user can review before saving.
+// When the policy has apply_to_hot set, it also reports what the hot repo would
+// lose (hot_count / hot_snapshots).
 func (s *Server) handleRetentionPreview(w http.ResponseWriter, r *http.Request) {
 	var ret config.Retention
 	if err := json.NewDecoder(r.Body).Decode(&ret); err != nil {
@@ -167,12 +181,29 @@ func (s *Server) handleRetentionPreview(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	rm, err := s.cold().ForgetDryRun(ctx, ret)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+	if err := ret.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": len(rm), "snapshots": rm})
+	resp := map[string]any{}
+	// An unconfigured offsite repo is not an error when previewing hot retention.
+	if s.cfg.Load().Cold.Repository != "" || !ret.ApplyToHot {
+		rm, err := s.cold().ForgetDryRun(ctx, ret)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		resp["count"], resp["snapshots"] = len(rm), rm
+	}
+	if ret.ApplyToHot {
+		rm, err := s.hot().ForgetDryRun(ctx, ret)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "hot repo: " + err.Error()})
+			return
+		}
+		resp["hot_count"], resp["hot_snapshots"] = len(rm), rm
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleInitCold initializes the cold repo if it doesn't exist yet — restic

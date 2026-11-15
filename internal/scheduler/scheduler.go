@@ -207,7 +207,10 @@ func (s *Scheduler) weekdayOK(now time.Time) bool {
 	return int(now.Weekday()) == *s.cfg.Load().Schedule.CheckWeekday
 }
 
-// Mirror copies new snapshots hot -> cold, then applies retention/prune on cold.
+// Mirror applies retention to the hot repo (only when retention.apply_to_hot is
+// set), copies snapshots hot -> cold (minus mirror.exclude_hosts), then applies
+// retention/prune on cold. Hot goes first so the copy cannot re-upload
+// snapshots that retention is about to drop.
 func (s *Scheduler) Mirror(ctx context.Context) {
 	if !s.acquire("mirror") {
 		return
@@ -219,9 +222,39 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	s.beginJob("mirror", cancel)
 	defer s.endJob()
 
+	cfg := s.cfg.Load()
+	if cfg.Retention.ApplyToHot {
+		if !s.prune(jctx, s.hotC(), "prune-hot", "the hot repo") {
+			return // cancelled
+		}
+		s.phaseJob("mirror")
+	}
+
 	start := time.Now()
-	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
-	out, err := s.coldC().CopyFrom(jctx, s.cfg.Load().Hot, hooks)
+	// With hot-only hosts configured, copy the remaining hosts by name. If the
+	// host list cannot be read, fail rather than fall back to copying everything:
+	// a hot-only host must never reach the offsite repo by accident.
+	var hosts []string
+	var out string
+	var err error
+	if len(cfg.Mirror.ExcludeHosts) > 0 {
+		var all []string
+		all, err = s.hotC().Hostnames(jctx)
+		for _, h := range all {
+			if !cfg.Mirror.Excludes(h) {
+				hosts = append(hosts, h)
+			}
+		}
+		if err == nil && len(hosts) == 0 {
+			s.store.RecordJob(state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), OK: true,
+				Message: "nothing to mirror: every host is hot-only"})
+			return
+		}
+	}
+	if err == nil {
+		hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
+		out, err = s.coldC().CopyFrom(jctx, cfg.Hot, hosts, hooks)
+	}
 	res := state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		if jctx.Err() == context.Canceled {
@@ -247,34 +280,37 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	s.log.Info("mirror ok")
 
 	// Retention runs on the cold repo right after a successful copy.
-	s.prune(jctx)
+	s.prune(jctx, s.coldC(), "prune", "e2")
 }
 
-func (s *Scheduler) prune(ctx context.Context) {
-	s.phaseJob("prune")
+// prune applies retention to one repo as job (history name) and reports
+// whether the caller should carry on: false only when the user cancelled.
+func (s *Scheduler) prune(ctx context.Context, cl *restic.Client, job, where string) bool {
+	s.phaseJob(job)
 	start := time.Now()
-	out, err := s.coldC().ForgetPrune(ctx, s.cfg.Load().Retention, restic.StreamHooks{OnActivity: s.jobLine})
-	res := state.JobResult{Job: "prune", StartedAt: start, EndedAt: time.Now(), Output: out}
+	out, err := cl.ForgetPrune(ctx, s.cfg.Load().Retention, restic.StreamHooks{OnActivity: s.jobLine})
+	res := state.JobResult{Job: job, StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		if ctx.Err() == context.Canceled {
 			res.OK = false
 			res.Message = "cancelled"
 			s.store.RecordJob(res)
-			return
+			return false
 		}
 		res.OK = false
 		res.Message = err.Error()
-		s.log.Error("prune failed", "err", err)
+		s.log.Error(job+" failed", "err", err)
 		s.store.RecordJob(res)
-		s.alert("prune failed", err.Error())
-		return
+		s.alert("retention on "+where+" failed", err.Error())
+		return true
 	}
 	res.OK = true
-	res.Message = "retention applied to e2"
+	res.Message = "retention applied to " + where
 	if freed := parseFreed(out); freed != "" {
 		res.Message += " · freed " + freed
 	}
 	s.store.RecordJob(res)
+	return true
 }
 
 // parseFreed pulls restic prune's "to delete: N blobs / X" freed amount.
@@ -366,9 +402,11 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 		}
 	}
 
-	stale := s.cfg.Load().Schedule.StaleAfter.Std()
+	cfg := s.cfg.Load()
 	prev := s.store.Snapshot()
 	for host, c := range latest {
+		stale := cfg.Schedule.StaleFor(host)
+		c.HotOnly = cfg.Mirror.Excludes(host)
 		if stale > 0 && time.Since(c.LastSnapshot) > stale {
 			c.Stale = true
 			// Only alert on the transition into staleness to avoid spamming.
