@@ -1,0 +1,38 @@
+# Pushing a tag vX.Y builds static Linux binaries and publishes a GitHub
+# release. The tag must match internal/version/VERSION.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check tag matches VERSION
+        run: |
+          v="$(cat internal/version/VERSION)"
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME does not match VERSION $v"; exit 1; }
+          echo "V=$v" >> "$GITHUB_ENV"
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go vet ./...
+          for arch in amd64 arm64; do
+            d="hoard_${V}_linux_${arch}"
+            mkdir -p "dist/$d"
+            GOOS=linux GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "dist/$d/" ./cmd/hoard-agent ./cmd/hoardd
+            cp -r contrib/systemd README.md config.example.json "dist/$d/"
+            tar -C dist -czf "dist/$d.tar.gz" "$d"
+          done
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS --title "hoard $V" --generate-notes

@@ -244,6 +244,19 @@ export RESTIC_PASSWORD="your-hot-repo-password"
 restic backup /home/me --host "$(hostname)"
 ```
 
+**Prebuilt binaries.** Each release on GitHub carries a tarball per
+architecture with the static `hoard-agent` and `hoardd` binaries and the systemd
+units (restic itself is not included; install 0.17 or newer):
+
+```sh
+v=0.28; arch=amd64        # or arm64
+curl -fsSL "https://github.com/nauski/hoard/releases/download/v$v/hoard_${v}_linux_${arch}.tar.gz" | tar -xz
+sudo install "hoard_${v}_linux_${arch}/hoard-agent" /usr/local/bin/
+```
+
+To cut a release: bump `internal/version/VERSION`, commit, then
+`git tag v$(cat internal/version/VERSION) && git push origin main --tags`.
+
 **Option C: headless server (systemd timer).** On a machine with no desktop,
 enroll once, list what to back up, and let a timer run one-shot backups. They
 report to the server like the GUI agent, so live progress, pause and cancel
@@ -253,7 +266,7 @@ work from the dashboard.
 hoard-agent -enroll <token> -enroll-server http://server:8080
 $EDITOR ~/.config/hoard-agent/config.json     # set "paths" (and "excludes")
 hoard-agent backup                            # first run, by hand
-cp contrib/systemd/hoard-agent-backup.* ~/.config/systemd/user/
+mkdir -p ~/.config/systemd/user && cp hoard_*/systemd/hoard-agent-backup.* ~/.config/systemd/user/   # from the release tarball
 systemctl --user daemon-reload
 systemctl --user enable --now hoard-agent-backup.timer
 sudo loginctl enable-linger "$USER"

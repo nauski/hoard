@@ -175,7 +175,7 @@
       <div><label class="sub">Integrity check at (HH:MM)</label><input id="cfgCheck" type="text" placeholder="04:00"></div>
       <div><label class="sub">Check weekday (0=Sun…6=Sat, blank=daily)</label><input id="cfgWeekday" type="text" placeholder="0"></div>
       <div><label class="sub">Stale after (e.g. 26h)</label><input id="cfgStale" type="text" placeholder="26h"></div>
-      <div><label class="sub">Stale after, per host<span class="help" tabindex="0" data-tip="Overrides for single hosts, e.g. an hourly host: juha-work=3h, laptop=72h">ⓘ</span></label><input id="cfgStaleHosts" type="text" placeholder="host=3h, other=72h"></div>
+      <div><label class="sub">Stale after, per host<span class="help" tabindex="0" data-tip="Overrides for single hosts, e.g. an hourly host: hourly-vm=3h, laptop=72h">ⓘ</span></label><input id="cfgStaleHosts" type="text" placeholder="host=3h, other=72h"></div>
       <div><label class="sub">Hot-only hosts<span class="help" tabindex="0" data-tip="Comma-separated hostnames that are never mirrored offsite. Their backups exist only on this server.">ⓘ</span></label><input id="cfgHotOnly" type="text" placeholder="host1, host2"></div>
       <div><label class="sub">Verify (restore fire-drill, HH:MM — blank disables)</label><input id="cfgVerify" type="text" placeholder="03:30"></div>
     </div>
@@ -189,7 +189,7 @@
       <div><label class="sub">yearly</label><input id="cfgKYearly" type="text"></div>
       <div><label class="sub">everything within<span class="help" tabindex="0" data-tip="Keep every snapshot newer than this, e.g. 48h, 7d, 1y6m. Blank = off.">ⓘ</span></label><input id="cfgKWithin" type="text" placeholder="48h"></div>
     </div>
-    <div style="margin-top:8px"><label class="sub">Per-host policies (JSON, replace the policy above for the named hosts)<span class="help" tabindex="0" data-tip='Example: {"juha-work":{"keep_within":"48h","keep_daily":14,"keep_weekly":8,"keep_monthly":6}}'>ⓘ</span></label>
+    <div style="margin-top:8px"><label class="sub">Per-host policies (JSON, replace the policy above for the named hosts)<span class="help" tabindex="0" data-tip='Example: {"hourly-vm":{"keep_within":"48h","keep_daily":14,"keep_weekly":8,"keep_monthly":6}}'>ⓘ</span></label>
       <textarea id="cfgRetHosts" rows="3" style="width:100%;font-family:ui-monospace,monospace" placeholder='{"host":{"keep_within":"48h","keep_daily":14}}'></textarea></div>
     <div style="margin-top:6px"><label><input type="checkbox" id="cfgRetHot"> also apply retention to the hot repo (off = the hot repo keeps every snapshot; turning it on deletes old snapshots there at the next mirror)</label></div>
     <div class="bar" style="margin-top:8px"><button class="secondary" onclick="previewRetention()">Preview</button></div>
@@ -202,7 +202,7 @@
       <div><label class="sub">Failure threshold<span class="help" tabindex="0" data-tip="Notify (webhook and/or email) when a client's backups fail this many times in a row.">ⓘ</span></label><input id="cfgFailThresh" type="text" style="width:60px" placeholder="3"></div>
       <div><label class="sub">Mass-deletion alert: files<span class="help" tabindex="0" data-tip="Alert, and hold the previous snapshot, when a backup has at least this many fewer files than the one before it. 0 = off.">ⓘ</span></label><input id="cfgAnFiles" type="text" style="width:80px" placeholder="10000"></div>
       <div><label class="sub">…or percent of files<span class="help" tabindex="0" data-tip="Same, when at least this share of the files vanished (catches an unmounted disk on a small host). 0 = off.">ⓘ</span></label><input id="cfgAnPct" type="text" style="width:60px" placeholder="50"></div>
-      <div><label class="sub">…files, per host<span class="help" tabindex="0" data-tip="A lower file threshold for single hosts, e.g. juha-work=2000 so that losing one worktree already alerts. The percent rule above still applies to them.">ⓘ</span></label><input id="cfgAnHosts" type="text" placeholder="host=2000"></div>
+      <div><label class="sub">…files, per host<span class="help" tabindex="0" data-tip="A lower file threshold for single hosts, e.g. hourly-vm=2000 so that losing one worktree already alerts. The percent rule above still applies to them.">ⓘ</span></label><input id="cfgAnHosts" type="text" placeholder="host=2000"></div>
     </div>
     <div class="sub" style="margin-top:10px;font-weight:600">Email (SMTP) alerts</div>
     <div class="setgrid">
