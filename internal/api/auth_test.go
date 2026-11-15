@@ -195,3 +195,33 @@ func TestPrivateEnrollment(t *testing.T) {
 		t.Errorf("report with own login = %d, want 200", rec.Code)
 	}
 }
+
+// TestStatusListsEnrolledAndBusyClients: a machine that enrolled but has no
+// finished backup, and one that is uploading right now, must both be visible.
+func TestStatusListsEnrolledAndBusyClients(t *testing.T) {
+	s, _, _ := authServer(t, func(c *config.Config) {
+		c.Clients = map[string]config.Client{
+			"vm":    {Password: "a", HTTPPassword: "vm-login"},
+			"frame": {Password: "b", HTTPPassword: "frame-login"},
+		}
+	})
+	if rec := do(t, s, "POST", "/api/report", `{"host":"vm","live":{"running":true}}`, func(r *http.Request) { r.SetBasicAuth("vm", "vm-login") }); rec.Code != http.StatusOK {
+		t.Fatalf("report = %d", rec.Code)
+	}
+	rec := do(t, s, "GET", "/api/status", "", nil)
+	var st struct {
+		Clients map[string]struct {
+			Busy    bool `json:"busy"`
+			OwnRepo bool `json:"own_repo"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := st.Clients["vm"]; !ok || !c.Busy || !c.OwnRepo {
+		t.Fatalf("vm = %+v (present %v), want listed, own repo, busy", c, ok)
+	}
+	if c, ok := st.Clients["frame"]; !ok || c.Busy {
+		t.Fatalf("frame = %+v (present %v), want listed and idle", c, ok)
+	}
+}

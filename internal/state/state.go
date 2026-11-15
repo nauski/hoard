@@ -56,6 +56,9 @@ type Client struct {
 	Stale        bool      `json:"stale"`
 	HotOnly      bool      `json:"hot_only,omitempty"` // excluded from the offsite mirror
 	OwnRepo      bool      `json:"own_repo,omitempty"` // has its own repository and login
+	// Busy is set only in the status API: the client is reporting a running
+	// backup or restore right now. Never stored.
+	Busy bool `json:"busy,omitempty"`
 	// Anomaly is set when the latest backup lost a large share of its files; it
 	// stays until dismissed on the dashboard.
 	Anomaly *Anomaly `json:"anomaly,omitempty"`

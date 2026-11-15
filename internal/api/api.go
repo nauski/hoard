@@ -122,11 +122,39 @@ type statusResponse struct {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	snap := s.store.Snapshot()
+	now := time.Now()
+	// The stored client map only knows machines with at least one snapshot.
+	// Add every enrolled machine that has none yet, so a client whose first
+	// backup is still uploading (or was never started) is visible too.
+	clients := make(map[string]state.Client, len(snap.Clients))
+	for h, c := range snap.Clients {
+		clients[h] = c
+	}
+	cfg := s.cfg.Load()
+	for name := range cfg.Clients {
+		if _, ok := clients[name]; !ok {
+			clients[name] = state.Client{Hostname: name, OwnRepo: true, HotOnly: cfg.Mirror.Excludes(name)}
+		}
+	}
+	// Mark the ones reporting a backup or restore right now.
+	for _, lc := range s.live.running(now, 15*time.Second) {
+		var l struct {
+			Running bool `json:"running"`
+		}
+		if json.Unmarshal(lc.Live, &l) == nil && l.Running {
+			c := clients[lc.Host]
+			if c.Hostname == "" {
+				c.Hostname = lc.Host // reporting, but not enrolled here and no snapshot yet
+			}
+			c.Busy = true
+			clients[lc.Host] = c
+		}
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		Version:    version.Version,
-		Now:        time.Now(),
+		Now:        now,
 		Running:    s.sched.Running(),
-		Clients:    snap.Clients,
+		Clients:    clients,
 		Jobs:       snap.LastByJob,
 		ColdRepo:   redact(s.cfg.Load().Cold.Repository),
 		HotRepo:    s.cfg.Load().Hot.Repository,

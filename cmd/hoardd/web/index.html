@@ -415,7 +415,10 @@ async function refresh(){
     const keys = Object.keys(clients).sort();
     $("#clients").innerHTML = keys.length ? keys.map(k=>{
       const c = clients[k];
-      const st2 = (c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>')
+      const never = !c.last_snapshot || String(c.last_snapshot).startsWith("0001");
+      const st2 = (c.busy ? '<span class="badge b-warn" title="Reporting a backup or restore right now; progress is under Running backups">running now</span> ' : '')
+        + (never ? '<span class="badge b-bad" title="Enrolled, but no backup has finished yet">no backup yet</span>'
+           : (c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>'))
         + (c.own_repo ? ' <span class="badge b-idle" title="This machine has its own repository and login; other machines cannot read its backups">own repo</span>' : (st.private_repos ? ' <span class="badge b-warn" title="Still on the shared repo, which clients can no longer reach. Enroll this machine again to give it its own repository.">shared repo: re-enroll</span>' : ''))
         + (c.hot_only ? ' <span class="badge b-idle" title="Excluded from the offsite mirror: this host exists only on this server">hot only</span>' : '');
       const an = c.anomaly;
@@ -431,7 +434,7 @@ async function refresh(){
           ? '<span style="color:var(--ok)">✓ ok</span>'
           : '<span style="color:var(--bad)">✗ failed'+(o.consecutive_failures>1?(' ×'+o.consecutive_failures):'')+'</span><div class="sub" title="'+esc(raw).replace(/"/g,'&quot;')+'">'+esc(raw.slice(0,60))+'</div>';
       }
-      return `<tr><td class="mono">${c.hostname}</td><td>${fmt(c.last_snapshot)}</td>
+      return `<tr><td class="mono">${c.hostname}</td><td>${never?"never":fmt(c.last_snapshot)}</td>
         <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}${anCell}</td><td>${runCell}</td></tr>`;
     }).join("") : '<tr><td colspan="7" class="sub">no client snapshots yet</td></tr>';
   }catch(e){ /* transient */ }
