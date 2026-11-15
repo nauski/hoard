@@ -463,7 +463,7 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 // checkAnomaly compares a host's two newest snapshots and, when the file count
 // fell past the configured thresholds, alerts and returns the anomaly record.
 func (s *Scheduler) checkAnomaly(ctx context.Context, host string, before, after restic.Snapshot) *state.Anomaly {
-	an := s.cfg.Load().Anomaly
+	an := s.cfg.Load().Anomaly.For(host)
 	if an.Files <= 0 && an.Percent <= 0 {
 		return nil
 	}

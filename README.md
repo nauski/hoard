@@ -352,7 +352,11 @@ All fields are in `config.example.json`. Highlights:
   one before it (or that share of them), hoard alerts, flags the client on the
   dashboard, and tags the previous snapshot `hold`. Snapshots tagged `hold` or
   `pin` (from "Back up and pin" / `hoard-agent backup -pin`) are kept by every
-  retention policy until released in the browser. Tagging gives a snapshot a new
+  retention policy until released in the browser. `anomaly.hosts` sets
+  thresholds per host, e.g. `{"hourly-vm": {"files": 2000, "percent": 50}}` when
+  one deleted project there is only a few thousand files out of a million; each
+  alert holds one more snapshot until you release it, so a low threshold on a
+  host with routine large deletions means regular alerts and holds. Tagging gives a snapshot a new
   ID, so a held snapshot of a mirrored host is copied offsite once more.
 - `alert.webhook_url` — a JSON POST target. The payload carries `title`, `content`,
   and `text` keys, covering ntfy, Discord-compatible relays, and most others.

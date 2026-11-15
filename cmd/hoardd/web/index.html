@@ -202,6 +202,7 @@
       <div><label class="sub">Failure threshold<span class="help" tabindex="0" data-tip="Notify (webhook and/or email) when a client's backups fail this many times in a row.">ⓘ</span></label><input id="cfgFailThresh" type="text" style="width:60px" placeholder="3"></div>
       <div><label class="sub">Mass-deletion alert: files<span class="help" tabindex="0" data-tip="Alert, and hold the previous snapshot, when a backup has at least this many fewer files than the one before it. 0 = off.">ⓘ</span></label><input id="cfgAnFiles" type="text" style="width:80px" placeholder="10000"></div>
       <div><label class="sub">…or percent of files<span class="help" tabindex="0" data-tip="Same, when at least this share of the files vanished (catches an unmounted disk on a small host). 0 = off.">ⓘ</span></label><input id="cfgAnPct" type="text" style="width:60px" placeholder="50"></div>
+      <div><label class="sub">…files, per host<span class="help" tabindex="0" data-tip="A lower file threshold for single hosts, e.g. juha-work=2000 so that losing one worktree already alerts. The percent rule above still applies to them.">ⓘ</span></label><input id="cfgAnHosts" type="text" placeholder="host=2000"></div>
     </div>
     <div class="sub" style="margin-top:10px;font-weight:600">Email (SMTP) alerts</div>
     <div class="setgrid">
@@ -725,6 +726,7 @@ async function loadConfig(){
     $("#cfgFailThresh").value=c.alert.failure_threshold||3;
     $("#cfgAnFiles").value=(c.anomaly||{}).files||0;
     $("#cfgAnPct").value=(c.anomaly||{}).percent||0;
+    $("#cfgAnHosts").value=Object.entries((c.anomaly||{}).hosts||{}).map(([h,a])=>h+"="+(a.files||0)).join(", ");
     const sm=c.smtp||{};
     $("#cfgSmtpHost").value=sm.host||""; $("#cfgSmtpPort").value=sm.port||"";
     $("#cfgSmtpUser").value=sm.username||""; $("#cfgSmtpFrom").value=sm.from||""; $("#cfgSmtpTo").value=sm.to||"";
@@ -785,7 +787,9 @@ async function saveConfig(){
     mirror:{exclude_hosts:$("#cfgHotOnly").value.split(",").map(x=>x.trim()).filter(Boolean)},
     alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked,
       on_failure:$("#cfgOnFailure").checked,failure_threshold:(parseInt($("#cfgFailThresh").value,10)||3)},
-    anomaly:{files:(parseInt($("#cfgAnFiles").value,10)||0),percent:(parseInt($("#cfgAnPct").value,10)||0)},
+    anomaly:(()=>{ const percent=(parseInt($("#cfgAnPct").value,10)||0), hosts={};
+      $("#cfgAnHosts").value.split(",").map(x=>x.trim()).filter(Boolean).forEach(x=>{const i=x.lastIndexOf("="); if(i>0) hosts[x.slice(0,i).trim()]={files:(parseInt(x.slice(i+1),10)||0),percent};});
+      return {files:(parseInt($("#cfgAnFiles").value,10)||0),percent,hosts}; })(),
     smtp:{host:$("#cfgSmtpHost").value.trim(),port:$("#cfgSmtpPort").value.trim(),username:$("#cfgSmtpUser").value.trim(),
       from:$("#cfgSmtpFrom").value.trim(),to:$("#cfgSmtpTo").value.trim(),password:$("#cfgSmtpPass").value},
     cold:{repository:$("#cfgColdRepo").value.trim(),s3_access_key_id:$("#cfgColdKey").value.trim(),

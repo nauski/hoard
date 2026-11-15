@@ -90,6 +90,14 @@ func TestAnomalyTriggered(t *testing.T) {
 			t.Errorf("Triggered(%d,%d) = %v, want %v", c.before, c.after, got, c.want)
 		}
 	}
+	// One worktree (~3k files) out of 1.1M: under the default, over a per-host 2000.
+	perHost := Anomaly{Files: 10000, Percent: 50, Hosts: map[string]Anomaly{"vm": {Files: 2000, Percent: 50}}}
+	if perHost.For("desktop").Triggered(1_100_000, 1_097_000) {
+		t.Error("default threshold fired on 3k files")
+	}
+	if !perHost.For("vm").Triggered(1_100_000, 1_097_000) {
+		t.Error("per-host threshold missed 3k files")
+	}
 	if (Anomaly{}).Triggered(1000, 0) {
 		t.Error("zero-value Anomaly must be off")
 	}

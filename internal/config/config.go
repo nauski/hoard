@@ -152,6 +152,18 @@ type Anomaly struct {
 	Files int `json:"files"`
 	// Percent triggers when at least this share of the files vanished (0 = off).
 	Percent int `json:"percent"`
+	// Hosts holds per-hostname thresholds that replace the top-level ones, e.g.
+	// a low file count for a host where losing one worktree (a few thousand
+	// files out of a million) must already alert. Only read on the top level.
+	Hosts map[string]Anomaly `json:"hosts,omitempty"`
+}
+
+// For returns the thresholds that apply to host.
+func (a Anomaly) For(host string) Anomaly {
+	if h, ok := a.Hosts[host]; ok {
+		return h
+	}
+	return a
 }
 
 // Triggered reports whether going from before to after files is an anomaly.
