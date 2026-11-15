@@ -57,7 +57,13 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setConfig(w http.ResponseWriter, r *http.Request) {
+	// Decode onto the current config, so settings the GUI does not render
+	// (exclude files, priority caps, ...) survive a save instead of being wiped.
+	// The JSON round trip gives a deep copy: decoding straight onto GetConfig's
+	// result would write into slices the agent is still using.
 	var c Config
+	cur, _ := json.Marshal(s.agent.GetConfig())
+	_ = json.Unmarshal(cur, &c)
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

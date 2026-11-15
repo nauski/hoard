@@ -272,6 +272,35 @@ hoard-agent restore -path ~/notes.md -before "2026-11-14 14:00" -to /tmp/out
 host, so it can take minutes on a large home. `restore` never writes over the
 original unless you pass `-inplace`.
 
+**Excludes and resource caps (agent `config.json`).** These are file-only
+settings; saving in the GUI keeps them.
+
+```json
+{
+  "exclude_files": ["/home/me/.config/backup-ignore.txt"],
+  "exclude_caches": true,
+  "exclude_if_present": [".nobackup"],
+  "exclude_larger_than": "1G",
+  "nice": 19,
+  "ionice_class": "idle",
+  "read_concurrency": 1,
+  "no_scan": true
+}
+```
+
+- An exclude file holds one restic pattern per line. A bare name (`node_modules`)
+  matches at any depth; a leading `/` anchors at the filesystem root, not at the
+  backup path (unlike gitignore); `!` re-includes, e.g. `node_modules` then
+  `!/home/me/.claude/plugins/**/node_modules`.
+- `hoard-agent backup -dry-run` prints how many files and bytes a backup would
+  include after excludes, without writing anything. Run it before a first large
+  backup.
+- `nice` / `ionice_class` (`idle` or `best-effort`) lower the backup's priority;
+  they matter in daemon mode (the timer unit already sets both). `no_scan` skips
+  the pre-scan, saving one walk of the tree per run; progress then has no
+  percentage.
+- Each run's log line and GUI entry include wall time and restic's peak memory.
+
 **restic version on the client.** Backups work with an old distro-packaged
 restic, but restoring from the agent needs restic 0.17 or newer (the agent warns
 at start if it is older). The mass-deletion alert does not depend on the client's

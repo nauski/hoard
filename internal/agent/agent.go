@@ -40,6 +40,25 @@ type Config struct {
 	Paths []string `json:"paths"`
 	// Excludes are restic --exclude patterns.
 	Excludes []string `json:"excludes"`
+	// ExcludeFiles are files of restic exclude patterns, one per line
+	// (--exclude-file); keep the list in a dotfile instead of the GUI. restic
+	// patterns allow "!" negation: "node_modules" then "!/home/me/keep/**/node_modules".
+	ExcludeFiles []string `json:"exclude_files,omitempty"`
+	// ExcludeCaches skips directories marked with a CACHEDIR.TAG file.
+	ExcludeCaches bool `json:"exclude_caches,omitempty"`
+	// ExcludeIfPresent skips any directory containing one of these file names
+	// (e.g. ".nobackup").
+	ExcludeIfPresent []string `json:"exclude_if_present,omitempty"`
+	// ExcludeLargerThan skips files above this size ("1G", "500M").
+	ExcludeLargerThan string `json:"exclude_larger_than,omitempty"`
+	// Nice (1-19) and IONiceClass ("idle" or "best-effort") lower the backup's
+	// CPU and disk priority. ReadConcurrency is restic's --read-concurrency
+	// (0 = restic's default of 2). NoScan skips the pre-scan that totals the
+	// tree: one tree walk less per run, at the price of no percentage or ETA.
+	Nice            int    `json:"nice,omitempty"`
+	IONiceClass     string `json:"ionice_class,omitempty"`
+	ReadConcurrency int    `json:"read_concurrency,omitempty"`
+	NoScan          bool   `json:"no_scan,omitempty"`
 	// Schedule is either a daily "HH:MM" backup time or an interval such as
 	// "1h" / "30m"; empty disables the scheduler.
 	Schedule string `json:"schedule"`
@@ -400,6 +419,9 @@ func (a *Agent) SetConfig(c Config) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	c.Schedule = trimSpace(c.Schedule)
+	if c.IONiceClass != "" && c.IONiceClass != "idle" && c.IONiceClass != "best-effort" {
+		return fmt.Errorf("ionice_class %q must be idle or best-effort", c.IONiceClass)
+	}
 	if c.Schedule != "" {
 		if _, err := nextRun(c.Schedule, time.Time{}, time.Time{}, time.Now()); err != nil {
 			return err
@@ -517,7 +539,69 @@ func (a *Agent) resticClient() (*restic.Client, error) {
 	if a.canRetryLock() {
 		cl.WithRetryLock(lockWait)
 	}
+	cl.WithBackupArgs(a.cfg.backupArgs()).WithWrapper(a.cfg.wrapper(exec.LookPath, a.log))
 	return cl, nil
+}
+
+// backupArgs maps the exclude and tuning settings to `restic backup` flags.
+func (c Config) backupArgs() []string {
+	var args []string
+	for _, f := range c.ExcludeFiles {
+		args = append(args, "--exclude-file", f)
+	}
+	if c.ExcludeCaches {
+		args = append(args, "--exclude-caches")
+	}
+	for _, n := range c.ExcludeIfPresent {
+		args = append(args, "--exclude-if-present", n)
+	}
+	if c.ExcludeLargerThan != "" {
+		args = append(args, "--exclude-larger-than", c.ExcludeLargerThan)
+	}
+	if c.ReadConcurrency > 0 {
+		args = append(args, "--read-concurrency", fmt.Sprint(c.ReadConcurrency))
+	}
+	if c.NoScan {
+		args = append(args, "--no-scan")
+	}
+	return args
+}
+
+// wrapper builds the nice/ionice prefix for the backup process. A tool that is
+// not installed is skipped with a warning instead of failing the backup.
+func (c Config) wrapper(look func(string) (string, error), log *slog.Logger) []string {
+	var w []string
+	add := func(tool string, args ...string) {
+		p, err := look(tool)
+		if err != nil {
+			log.Warn("priority setting ignored: tool not found", "tool", tool)
+			return
+		}
+		w = append(append(w, p), args...)
+	}
+	if c.Nice > 0 {
+		add("nice", "-n", fmt.Sprint(min(c.Nice, 19)))
+	}
+	switch c.IONiceClass {
+	case "idle":
+		add("ionice", "-c", "3")
+	case "best-effort":
+		add("ionice", "-c", "2", "-n", "7")
+	}
+	return w
+}
+
+// DryRun reports what a backup would do right now, without writing anything
+// to the repository: use it to check exclude rules before a first large run.
+func (a *Agent) DryRun(ctx context.Context) (*restic.BackupResult, error) {
+	cl, err := a.resticClient()
+	if err != nil {
+		return nil, err
+	}
+	cfg := a.GetConfig()
+	cl.WithBackupArgs(append(cfg.backupArgs(), "--dry-run"))
+	res, _, err := cl.Backup(ctx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, restic.BackupHooks{})
+	return res, err
 }
 
 // lockWait is how long a backup waits for the server's prune or check to
@@ -636,6 +720,10 @@ func (a *Agent) BackupPin(ctx context.Context, note string) error {
 	if summary != nil {
 		rr.Message = fmt.Sprintf("snapshot %s: %d files, %s added",
 			short(summary.SnapshotID), summary.TotalFiles, humanBytes(summary.DataAddedPacked))
+		if summary.PeakRSSKiB > 0 {
+			rr.Message += fmt.Sprintf(" (%s, peak memory %s)",
+				rr.EndedAt.Sub(rr.StartedAt).Round(time.Second), humanBytes(uint64(summary.PeakRSSKiB)*1024))
+		}
 		if summary.WarningCount > 0 {
 			rr.Warnings = summary.Warnings
 			rr.Message += fmt.Sprintf(", %d files could not be read", summary.WarningCount)

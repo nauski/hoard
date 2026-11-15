@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
@@ -28,9 +29,26 @@ import (
 
 // Client runs restic commands against a single repository.
 type Client struct {
-	bin       string
-	repo      config.Repo
-	retryLock string
+	bin        string
+	repo       config.Repo
+	retryLock  string
+	backupArgs []string // extra `restic backup` flags
+	wrap       []string // command prefix for backups, e.g. nice -n 19
+}
+
+// WithBackupArgs adds extra flags to every `restic backup` this client runs
+// (exclude files, --no-scan, --dry-run, ...).
+func (c *Client) WithBackupArgs(args []string) *Client {
+	c.backupArgs = args
+	return c
+}
+
+// WithWrapper runs backups through a command prefix such as
+// ["nice", "-n", "19", "ionice", "-c", "3"]. Those tools exec restic in place,
+// so the process handle given to OnStart is still restic itself.
+func (c *Client) WithWrapper(prefix []string) *Client {
+	c.wrap = prefix
+	return c
 }
 
 // WithRetryLock makes every command wait up to d (a restic duration such as
@@ -175,6 +193,8 @@ type BackupResult struct {
 	// by restic's summary.
 	Warnings     []string `json:"warnings,omitempty"`
 	WarningCount int      `json:"warning_count,omitempty"`
+	// PeakRSSKiB is restic's peak memory during the run, for tuning caps.
+	PeakRSSKiB int64 `json:"peak_rss_kib,omitempty"`
 }
 
 const maxWarnings = 200
@@ -237,9 +257,11 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 	for _, e := range excludes {
 		args = append(args, "--exclude", e)
 	}
+	args = append(args, c.backupArgs...)
 	args = append(args, paths...)
 
-	cmd := exec.CommandContext(ctx, c.bin, append(c.globalArgs(), args...)...)
+	argv := append(append(append([]string(nil), c.wrap...), c.bin), append(c.globalArgs(), args...)...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = append(cmd.Environ(), c.env()...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -329,6 +351,9 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 	}
 	if result != nil {
 		result.Warnings, result.WarningCount = warnings, warnCount
+		if ru, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
+			result.PeakRSSKiB = int64(ru.Maxrss) // Linux reports KiB
+		}
 	}
 	out := strings.Join(tailLines, "\n")
 	if waitErr != nil {

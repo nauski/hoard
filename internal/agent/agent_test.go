@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,5 +245,97 @@ func TestRetryLockOnlyOnNewRestic(t *testing.T) {
 	}
 	if (&Agent{resticBin: "/nonexistent/restic"}).canRetryLock() {
 		t.Error("unknown version must not get --retry-lock")
+	}
+}
+
+func TestBackupArgsAndWrapper(t *testing.T) {
+	c := Config{
+		ExcludeFiles: []string{"/a.txt", "/b.txt"}, ExcludeCaches: true,
+		ExcludeIfPresent: []string{".nobackup"}, ExcludeLargerThan: "1G",
+		ReadConcurrency: 1, NoScan: true, Nice: 30, IONiceClass: "idle",
+	}
+	want := "--exclude-file /a.txt --exclude-file /b.txt --exclude-caches --exclude-if-present .nobackup --exclude-larger-than 1G --read-concurrency 1 --no-scan"
+	if got := strings.Join(c.backupArgs(), " "); got != want {
+		t.Fatalf("backupArgs = %q", got)
+	}
+	if got := (Config{}).backupArgs(); len(got) != 0 {
+		t.Fatalf("empty config gave %v", got)
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	found := func(tool string) (string, error) { return "/bin/" + tool, nil }
+	if got := strings.Join(c.wrapper(found, log), " "); got != "/bin/nice -n 19 /bin/ionice -c 3" {
+		t.Fatalf("wrapper = %q", got)
+	}
+	missing := func(string) (string, error) { return "", os.ErrNotExist }
+	if got := c.wrapper(missing, log); len(got) != 0 {
+		t.Fatalf("missing tools must be skipped, got %v", got)
+	}
+}
+
+// TestExcludeFileNiceAndDryRun runs real backups: an exclude file with a
+// negation, through nice, and a dry run that writes no snapshot.
+func TestExcludeFileNiceAndDryRun(t *testing.T) {
+	a, _ := newAgent(t)
+	src := t.TempDir()
+	for _, p := range []string{"proj/node_modules/x", "keep/node_modules/y", "proj/main.js"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(src, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, p), []byte(p), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ex := filepath.Join(t.TempDir(), "ignore.txt")
+	if err := os.WriteFile(ex, []byte("node_modules\n!"+src+"/keep/**/node_modules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.cfg.Paths = []string{src}
+	a.cfg.ExcludeFiles = []string{ex}
+	a.cfg.Nice = 10
+	ctx := context.Background()
+
+	before, _ := a.Snapshots(ctx)
+	res, err := a.DryRun(ctx)
+	if err != nil || res == nil || res.TotalFiles != 2 {
+		t.Fatalf("dry run = %+v, %v; want 2 files (main.js and keep/.../y)", res, err)
+	}
+	if after, _ := a.Snapshots(ctx); len(after) != len(before) {
+		t.Fatal("dry run wrote a snapshot")
+	}
+
+	if err := a.Backup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rr, _ := a.LastRun()
+	if rr.Summary == nil || rr.Summary.TotalFiles != 2 || rr.Summary.PeakRSSKiB == 0 {
+		t.Fatalf("backup summary = %+v", rr.Summary)
+	}
+}
+
+// TestGUISaveKeepsFileOnlySettings: the GUI posts only the fields it renders;
+// file-only settings must survive that save.
+func TestGUISaveKeepsFileOnlySettings(t *testing.T) {
+	a, err := Load(filepath.Join(t.TempDir(), "config.json"), "restic", "", slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := a.GetConfig()
+	c.ExcludeFiles, c.Nice, c.NoScan = []string{"/x/ignore.txt"}, 19, true
+	if err := a.SetConfig(c); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(a, slog.New(slog.NewTextHandler(os.Stderr, nil)), os.DirFS(t.TempDir()))
+	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"schedule":"1h","paths":["/home/me"],"excludes":[]}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rec.Code, rec.Body)
+	}
+	got := a.GetConfig()
+	if len(got.ExcludeFiles) != 1 || got.Nice != 19 || !got.NoScan {
+		t.Fatalf("file-only settings lost: %+v", got)
+	}
+	if got.Schedule != "1h" || len(got.Paths) != 1 || len(got.Excludes) != 0 {
+		t.Fatalf("posted fields not applied: %+v", got)
 	}
 }

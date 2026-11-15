@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -121,6 +122,7 @@ func main() {
 
 const usage = `usage: hoard-agent [flags]                       run the GUI and scheduler
        hoard-agent [flags] backup [-pin NOTE]    back up once and exit; -pin keeps the snapshot past retention
+       hoard-agent [flags] backup -dry-run       show what a backup would include, without writing anything
        hoard-agent [flags] find PATTERN          search this host's backups by file name ("wt-perf", "*.jsonl")
        hoard-agent [flags] restore -path PATH [-before TIME] [-to DIR] [-inplace]
                                                  restore PATH from the newest backup that has it
@@ -136,8 +138,24 @@ func runCommand(ctx context.Context, a *agent.Agent, args []string) error {
 	switch args[0] {
 	case "backup":
 		pin := fs.String("pin", "", "")
+		dry := fs.Bool("dry-run", false, "")
 		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 {
 			return errUsage
+		}
+		if *dry {
+			res, err := a.DryRun(ctx)
+			if err != nil {
+				return err
+			}
+			if res == nil {
+				return errors.New("restic printed no summary")
+			}
+			fmt.Printf("would back up %d files, %s (after excludes); %d new, %d changed; about %s to upload\n",
+				res.TotalFiles, sizeString(res.TotalBytes), res.FilesNew, res.FilesChanged, sizeString(res.DataAddedPacked))
+			if res.WarningCount > 0 {
+				fmt.Printf("%d files could not be read:\n  %s\n", res.WarningCount, strings.Join(res.Warnings, "\n  "))
+			}
+			return nil
 		}
 		return a.BackupPin(ctx, *pin) // logs its own outcome; reports to the server like the daemon
 	case "find":
@@ -184,6 +202,19 @@ func runCommand(ctx context.Context, a *agent.Agent, args []string) error {
 		return nil
 	}
 	return errUsage
+}
+
+func sizeString(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // parseWhen accepts RFC 3339 or local "2006-01-02 15:04" / "2006-01-02".
