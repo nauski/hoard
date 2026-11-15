@@ -1,13 +1,37 @@
-# Pushing a tag vX.Y builds static Linux binaries and publishes a GitHub
-# release. The tag must match internal/version/VERSION.
+# Pushing a tag vX.Y builds static Linux binaries, publishes a GitHub release,
+# and pushes the server image to ghcr.io/nauski/hoard:X.Y (and :latest). The
+# tag must match internal/version/VERSION. Running the workflow by hand
+# (workflow_dispatch) only rebuilds and pushes the image for the current VERSION.
 name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 permissions:
   contents: write
+  packages: write
 jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push server image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="$(cat internal/version/VERSION)"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match VERSION $v"; exit 1
+          fi
+          img="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -t "$img:$v" -t "$img:latest" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.version=$v" .
+          docker push "$img:$v"
+          docker push "$img:latest"
   release:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

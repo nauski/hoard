@@ -185,7 +185,7 @@ spinner wondering whether a 30 GB offsite copy is halfway done or stuck.
    ```yaml
    services:
      hoard:
-       image: nauski/hoard:latest      # or build: .
+       image: ghcr.io/nauski/hoard:0.28   # published per release; or build: .
        restart: unless-stopped
        ports:
          - "8080:8080"                 # dashboard + API
