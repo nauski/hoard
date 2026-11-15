@@ -82,7 +82,7 @@
 </head>
 <body>
 <header>
-  <h1>🗄️ hoard</h1>
+  <h1>🗄️ hoard <span id="ver" class="sub" style="font-weight:400" title="hoard server version"></span></h1>
   <span id="running" class="badge b-idle">idle</span>
   <div class="repo">
     <div>hot: <span class="help below" tabindex="0" data-tip="Local staging repo on the NAS. Clients push backups here first over your LAN (fast). Mirrored offsite on a schedule.">ⓘ</span> <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b> <span id="hotSaved" class="sub"></span></div>
@@ -312,6 +312,7 @@ function badge(ok){ return ok ? '<span class="badge b-ok">ok</span>' : '<span cl
 async function refresh(){
   try{
     const st = await (await fetch("/api/status")).json();
+    if(st.version){ $("#ver").textContent="v"+st.version; document.title="hoard v"+st.version+" — backup control"; }
     $("#hotRepo").textContent = st.hot_repo || "—";
     $("#coldRepo").textContent = st.cold_repo || "—";
     const run = st.running || "";

@@ -90,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>🗄️ hoard agent</h1>
+  <h1>🗄️ hoard agent <span id="ver" class="sub" style="font-weight:400" title="hoard agent version"></span></h1>
   <span id="run" class="badge b-idle">idle</span>
   <span class="host">this machine: <b id="host">—</b></span>
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
@@ -450,6 +450,7 @@ async function refresh(){
   try{
     const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),8000);
     const st=await (await fetch("/api/status",{signal:ctl.signal})).json();
+    if(st.version){ $("#ver").textContent="v"+st.version; document.title="hoard agent v"+st.version; }
     clearTimeout(to);
     const wasRunning=running;
     const live=st.live||{running:st.running};

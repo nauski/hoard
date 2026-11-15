@@ -415,7 +415,8 @@ while busy, and a running mirror/check/prune can be stopped with
 ```sh
 CGO_ENABLED=0 go build ./...      # two static binaries; web UIs are embedded
 go vet ./...
-docker build -t nauski/hoard:latest .   # server image (bundles restic + rest-server)
+v=$(cat internal/version/VERSION)       # the one version number; bump it for a release
+docker build -t nauski/hoard:$v -t nauski/hoard:latest .   # server image (bundles restic + rest-server)
 nix build .#hoardd .#hoard-agent        # or via the flake
 ```
 

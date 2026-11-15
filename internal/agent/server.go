@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/nauski/hoard/internal/version"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -76,6 +77,7 @@ func (s *Server) setConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 type statusResponse struct {
+	Version string     `json:"version"`
 	Config  Config     `json:"config"`
 	Running bool       `json:"running"`
 	LastRun RunResult  `json:"last_run"`
@@ -88,6 +90,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	last, running := s.agent.LastRun()
 	now := time.Now()
 	resp := statusResponse{
+		Version: version.Version,
 		Config:  s.agent.GetConfig(),
 		Running: running,
 		LastRun: last,

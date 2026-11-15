@@ -12,6 +12,8 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"fmt"
+	"github.com/nauski/hoard/internal/version"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -35,7 +37,12 @@ func main() {
 	resticBin := flag.String("restic", "restic", "path to restic binary")
 	debug := flag.Bool("debug", false, "verbose logging")
 	initRepos := flag.Bool("init", false, "initialize hot and cold repos if missing, then exit")
+	showVer := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVer {
+		fmt.Println("hoardd", version.Version)
+		return
+	}
 
 	level := slog.LevelInfo
 	if *debug {

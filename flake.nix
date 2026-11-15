@@ -10,7 +10,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        version = "0.1.0";
+        version = pkgs.lib.fileContents ./internal/version/VERSION;
         # No external Go modules, so nothing to vendor.
         mkBin = name: pkgs.buildGoModule {
           pname = name;

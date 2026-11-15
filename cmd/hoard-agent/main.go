@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/nauski/hoard/internal/version"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -36,7 +37,12 @@ func main() {
 	debug := flag.Bool("debug", false, "verbose logging")
 	enrollTok := flag.String("enroll", "", "redeem an enrollment token, then exit")
 	enrollSrv := flag.String("enroll-server", "", "hoard server URL for -enroll (e.g. http://truenas:8080)")
+	showVer := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVer {
+		fmt.Println("hoard-agent", version.Version)
+		return
+	}
 
 	level := slog.LevelInfo
 	if *debug {

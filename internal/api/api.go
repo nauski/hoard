@@ -18,6 +18,7 @@ import (
 	"github.com/nauski/hoard/internal/restic"
 	"github.com/nauski/hoard/internal/scheduler"
 	"github.com/nauski/hoard/internal/state"
+	"github.com/nauski/hoard/internal/version"
 )
 
 // Server wires HTTP handlers to the scheduler, store, and restic clients.
@@ -103,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 type statusResponse struct {
+	Version    string                     `json:"version"`
 	Now        time.Time                  `json:"now"`
 	Running    string                     `json:"running"`
 	Clients    map[string]state.Client    `json:"clients"`
@@ -117,6 +119,7 @@ type statusResponse struct {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	snap := s.store.Snapshot()
 	writeJSON(w, http.StatusOK, statusResponse{
+		Version:    version.Version,
 		Now:        time.Now(),
 		Running:    s.sched.Running(),
 		Clients:    snap.Clients,
