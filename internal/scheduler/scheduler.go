@@ -396,6 +396,11 @@ func (s *Scheduler) Check(ctx context.Context) {
 
 	start := time.Now()
 	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
+	// Clear a stale lock first (see Mirror): the check needs the repository,
+	// and a lock left by a crashed job would fail it every time.
+	if err := s.coldC().Unlock(jctx); err != nil {
+		s.log.Warn("unlock cold repo", "err", err)
+	}
 	out, err := s.coldC().Check(jctx, "5%", hooks)
 	res := state.JobResult{Job: "check", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
