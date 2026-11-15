@@ -61,29 +61,38 @@ func (s *Server) setConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.agent.SetConfig(c); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, s.agent.GetConfig())
 }
 
 type statusResponse struct {
-	Config  Config    `json:"config"`
-	Running bool      `json:"running"`
-	LastRun RunResult `json:"last_run"`
-	Live    Live      `json:"live"`
-	Now     time.Time `json:"now"`
+	Config  Config     `json:"config"`
+	Running bool       `json:"running"`
+	LastRun RunResult  `json:"last_run"`
+	Live    Live       `json:"live"`
+	Now     time.Time  `json:"now"`
+	NextRun *time.Time `json:"next_run,omitempty"`
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	last, running := s.agent.LastRun()
-	writeJSON(w, http.StatusOK, statusResponse{
+	now := time.Now()
+	resp := statusResponse{
 		Config:  s.agent.GetConfig(),
 		Running: running,
 		LastRun: last,
 		Live:    s.agent.Live(),
-		Now:     time.Now(),
-	})
+		Now:     now,
+	}
+	if next, err := s.agent.NextRun(now); err == nil && !next.IsZero() {
+		if next.Before(now) {
+			next = now // overdue: the scheduler fires within a minute
+		}
+		resp.NextRun = &next
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // control applies pause/resume/cancel to the running backup.

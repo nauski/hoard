@@ -1,0 +1,15 @@
+# One-shot backup for a headless machine. Install as a user unit:
+#   cp hoard-agent-backup.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hoard-agent-backup.timer
+#   sudo loginctl enable-linger "$USER"     # run without a login session
+# Leave "schedule" empty in the agent config; the timer is the schedule.
+[Unit]
+Description=hoard one-shot backup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hoard-agent backup
+Nice=19
+IOSchedulingClass=idle
+#CPUQuota=50%

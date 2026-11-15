@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,5 +128,34 @@ func TestSetConfigPreservesUnsentFields(t *testing.T) {
 	}
 	if c.Repository != "rest:http://x" {
 		t.Fatalf("Repository not set: %q", c.Repository)
+	}
+}
+
+func TestBackupWithUnreadableFileIsOKWithWarnings(t *testing.T) {
+	a, _ := newAgent(t)
+	if os.Geteuid() == 0 {
+		t.Skip("root can read chmod 000 files")
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "ok.txt"), []byte("fine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "locked.txt"), []byte("secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	a.cfg.Paths = []string{src}
+
+	if err := a.Backup(context.Background()); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	rr, _ := a.LastRun()
+	if !rr.OK {
+		t.Fatalf("run not OK: %s", rr.Message)
+	}
+	if len(rr.Warnings) != 1 || !strings.Contains(rr.Warnings[0], "locked.txt") {
+		t.Fatalf("warnings = %q", rr.Warnings)
+	}
+	if !strings.Contains(rr.Message, "1 files could not be read") {
+		t.Fatalf("message = %q", rr.Message)
 	}
 }

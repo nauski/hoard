@@ -352,3 +352,54 @@ func TestForgetDryRunEmptyRepo(t *testing.T) {
 		t.Fatalf("expected 0 snapshots, got %d", len(rm))
 	}
 }
+
+// TestBackupUnreadableFileIsWarning: restic exits 3 when a file cannot be
+// read; the snapshot still exists, so Backup must return it with a warning
+// and no error.
+func TestBackupUnreadableFileIsWarning(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not on PATH")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can read chmod 000 files")
+	}
+	ctx := context.Background()
+	cl := New("restic", config.Repo{Repository: t.TempDir(), Password: "test"})
+	if err := cl.EnsureInit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "ok.txt"), []byte("fine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "locked.txt"), []byte("secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _, err := cl.Backup(ctx, []string{src}, nil, "h", nil, BackupHooks{})
+	if err != nil {
+		t.Fatalf("exit 3 must not be an error: %v", err)
+	}
+	if res == nil || res.SnapshotID == "" {
+		t.Fatalf("no snapshot in result: %+v", res)
+	}
+	if res.WarningCount != 1 || len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "locked.txt") {
+		t.Fatalf("warnings = %d %q, want one naming locked.txt", res.WarningCount, res.Warnings)
+	}
+}
+
+func TestBackupWrongPasswordMessage(t *testing.T) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		t.Skip("restic not on PATH")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := New("restic", config.Repo{Repository: dir, Password: "right"}).EnsureInit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	bad := New("restic", config.Repo{Repository: dir, Password: "wrong"})
+	_, _, err := bad.Backup(ctx, []string{t.TempDir()}, nil, "h", nil, BackupHooks{})
+	if err == nil || !strings.Contains(err.Error(), "wrong repository password") {
+		t.Fatalf("err = %v, want it to mention wrong repository password", err)
+	}
+}

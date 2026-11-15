@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -148,6 +149,26 @@ type BackupResult struct {
 	DataAddedPacked uint64 `json:"data_added_packed"`
 	TotalFiles      int    `json:"total_files_processed"`
 	TotalBytes      uint64 `json:"total_bytes_processed"`
+	// Warnings lists files restic could not read ("<path>: <message>"), capped
+	// at maxWarnings; WarningCount is the uncapped total. Set by Backup, not
+	// by restic's summary.
+	Warnings     []string `json:"warnings,omitempty"`
+	WarningCount int      `json:"warning_count,omitempty"`
+}
+
+const maxWarnings = 200
+
+// exitHint names restic's documented exit codes (0.17+).
+func exitHint(code int) string {
+	switch code {
+	case 10:
+		return "repository does not exist"
+	case 11:
+		return "repository is locked"
+	case 12:
+		return "wrong repository password"
+	}
+	return ""
 }
 
 // Progress is a live snapshot of an in-flight backup, parsed from restic's
@@ -217,6 +238,30 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 	// output is retained for diagnostics.
 	var result *BackupResult
 	var tailLines []string
+	var warnings []string
+	warnCount := 0
+	// onError records one restic {"message_type":"error"} line; other lines
+	// are ignored, so it is safe to feed it raw stderr.
+	onError := func(line []byte) {
+		var e struct {
+			MessageType string `json:"message_type"`
+			Item        string `json:"item"`
+			Error       struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(line, &e) != nil || e.MessageType != "error" {
+			return
+		}
+		w := e.Item + ": " + e.Error.Message
+		warnCount++
+		if len(warnings) < maxWarnings {
+			warnings = append(warnings, w)
+		}
+		if hooks.OnActivity != nil {
+			hooks.OnActivity("error", w)
+		}
+	}
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -246,17 +291,7 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 				}
 			}
 		case "error":
-			if hooks.OnActivity != nil {
-				var e struct {
-					Item  string `json:"item"`
-					Error struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				}
-				if json.Unmarshal(line, &e) == nil {
-					hooks.OnActivity("error", e.Item+": "+e.Error.Message)
-				}
-			}
+			onError(line)
 			tailLines = appendTail(tailLines, string(line))
 		case "summary":
 			var s BackupResult
@@ -268,9 +303,27 @@ func (c *Client) Backup(ctx context.Context, paths, excludes []string, host stri
 	}
 
 	waitErr := cmd.Wait()
+	for _, l := range bytes.Split(errb.Bytes(), []byte("\n")) {
+		onError(l)
+	}
+	if result != nil {
+		result.Warnings, result.WarningCount = warnings, warnCount
+	}
 	out := strings.Join(tailLines, "\n")
 	if waitErr != nil {
+		code := -1
+		var ee *exec.ExitError
+		if errors.As(waitErr, &ee) {
+			code = ee.ExitCode()
+		}
+		// Exit 3 = snapshot saved, some files unreadable: a warning, not a failure.
+		if code == 3 && result != nil && result.SnapshotID != "" {
+			return result, out, nil
+		}
 		msg := strings.TrimSpace(errb.String())
+		if hint := exitHint(code); hint != "" {
+			msg = hint + ": " + msg
+		}
 		return result, out, fmt.Errorf("restic backup: %w: %s", waitErr, msg)
 	}
 	return result, out, nil

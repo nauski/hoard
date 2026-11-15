@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
-	"time"
 )
 
 // TestBackupOutcomeExclusions verifies backupOutcome()'s filtering rules
@@ -88,16 +87,11 @@ func TestFailedBackupReportsOutcome(t *testing.T) {
 	// A backup against an uninitialised repo fails.
 	_ = a.Backup(context.Background())
 
-	// Give the final report a moment to land.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		got := sawFailure
-		mu.Unlock()
-		if got {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	// Backup must not return before the final report was delivered: a one-shot
+	// `hoard-agent backup` process exits right after it.
+	mu.Lock()
+	defer mu.Unlock()
+	if !sawFailure {
+		t.Fatal("Backup returned before the server received the failing last_result")
 	}
-	t.Fatal("server never received a failing last_result from the agent")
 }

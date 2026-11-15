@@ -136,6 +136,7 @@
   <div class="card">
     <h2>Last backup</h2>
     <div id="last" class="sub">—</div>
+    <div id="next" class="sub"></div>
   </div>
   </section>
 
@@ -158,8 +159,8 @@
         <input id="pwfile" type="text" placeholder="/run/secrets/hoard_hot_password" />
       </div>
       <div>
-        <label>Daily backup time (HH:MM, blank = manual only)<span class="help" tabindex="0" data-tip="When to auto-run a backup each day (HH:MM). Blank = manual only.">ⓘ</span></label>
-        <input id="sched" type="text" placeholder="21:00" />
+        <label>Backup schedule (blank = manual only)<span class="help" tabindex="0" data-tip="Either a daily time (21:00) or an interval (1h, 30m, 6h). A run missed while the machine was asleep or off starts as soon as it is back.">ⓘ</span></label>
+        <input id="sched" type="text" placeholder="21:00 or 1h" />
       </div>
     </div>
     <div class="grid2">
@@ -377,7 +378,9 @@ async function save(){
     limit_upload_kibps:(parseInt($("#limUp").value,10)||0), limit_download_kibps:(parseInt($("#limDown").value,10)||0),
     notify_desktop: $("#notify").checked };
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  $("#smsg").textContent = r.ok ? "saved ✓" : "save failed";
+  let err="save failed";
+  if(!r.ok){ try{ err=(await r.json()).error||err; }catch(e){} }
+  $("#smsg").textContent = r.ok ? "saved ✓" : err;
   setTimeout(()=>$("#smsg").textContent="",2500);
 }
 async function backup(){
@@ -446,6 +449,7 @@ async function refresh(){
     else { run.textContent="idle"; run.className="badge b-idle"; }
     $("#now").disabled=running;
     renderLive(live);
+    $("#next").textContent = st.next_run ? "next run "+fmt(st.next_run) : "";
     const lr=st.last_run;
     // A run only counts if it actually happened this process lifetime (lastRun is
     // in-memory, so it's the zero value 0001-01-01 right after a restart). Without
@@ -454,9 +458,12 @@ async function refresh(){
     const failed = ran && lr.ok===false && !running && lr.message!=='cancelled';
     $("#now").textContent = failed ? "Retry backup" : "Back up now";
     if(ran){
-      const b=lr.ok?'<span class="badge b-ok">ok</span>':'<span class="badge b-bad">failed</span>';
+      const warns=lr.warnings||[];
+      const nWarn=(lr.summary&&lr.summary.warning_count)||warns.length;
+      const b=!lr.ok?'<span class="badge b-bad">failed</span>':(nWarn?'<span class="badge b-run">ok, with warnings</span>':'<span class="badge b-ok">ok</span>');
       const msgClass = failed ? "danger-text" : "mono";
-      $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='"+msgClass+"'>"+esc(lr.message||"")+"</span>";
+      const wl=nWarn?"<details><summary>"+nWarn+" files could not be read (changing or unreadable during the backup)</summary><pre class='mono'>"+esc(warns.join("\n"))+"</pre></details>":"";
+      $("#last").innerHTML = b+" "+fmt(lr.ended_at)+"<br><span class='"+msgClass+"'>"+esc(lr.message||"")+"</span>"+wl;
     } else if(bSnaps && bSnaps.length){
       // No backup this session — fall back to the newest snapshot still in the
       // repo (bSnaps is sorted newest-first, refreshed every 15s) so the card

@@ -1,0 +1,11 @@
+[Unit]
+Description=hourly hoard backup
+
+[Timer]
+OnCalendar=hourly
+# Run a missed backup at the next boot/wake.
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

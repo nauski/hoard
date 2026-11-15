@@ -136,7 +136,8 @@ The irreversible option makes you type the filename to confirm:
 ## The agent
 
 Each machine runs `hoard-agent`, a local web GUI (default `http://127.0.0.1:7420`).
-Pick folders with the browser, set a daily time, hit **Back up now**, and watch
+Pick folders with the browser, set a daily time (`21:00`) or an interval (`1h`; a
+run missed while the machine was asleep or off starts as soon as it is back), hit **Back up now**, and watch
 live progress. The same backup browser is here too, scoped to this machine — and
 its deletes are delegated to the server so they hit e2 as well.
 
@@ -243,7 +244,26 @@ export RESTIC_PASSWORD="your-hot-repo-password"
 restic backup /home/me --host "$(hostname)"
 ```
 
-Either way, hoard handles everything downstream (offsite mirror, retention,
+**Option C: headless server (systemd timer).** On a machine with no desktop,
+enroll once, list what to back up, and let a timer run one-shot backups. They
+report to the server like the GUI agent, so live progress, pause and cancel
+work from the dashboard.
+
+```sh
+hoard-agent -enroll <token> -enroll-server http://server:8080
+$EDITOR ~/.config/hoard-agent/config.json     # set "paths" (and "excludes")
+hoard-agent backup                            # first run, by hand
+cp contrib/systemd/hoard-agent-backup.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now hoard-agent-backup.timer
+sudo loginctl enable-linger "$USER"
+```
+
+`hoard-agent backup` exits 0 when a snapshot was saved, including when some
+files could not be read because they were changing (restic exit code 3; the
+count is in the log line and the files are listed in the GUI), and 1 on failure.
+
+Any way you choose, hoard handles everything downstream (offsite mirror, retention,
 verification) and shows each host's freshness on the dashboard. If a host stops
 checking in past `stale_after`, you get an alert.
 

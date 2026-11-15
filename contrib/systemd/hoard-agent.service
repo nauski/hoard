@@ -1,0 +1,17 @@
+# Daemon mode: GUI on 127.0.0.1:7420 plus the built-in scheduler. Use this
+# OR the backup timer, not both. Set "schedule" in the GUI ("21:00" or "1h").
+# Install as a user unit:
+#   cp hoard-agent.service ~/.config/systemd/user/
+#   systemctl --user enable --now hoard-agent.service
+[Unit]
+Description=hoard backup agent (GUI + scheduler)
+
+[Service]
+ExecStart=/usr/local/bin/hoard-agent
+Restart=always
+RestartSec=5
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

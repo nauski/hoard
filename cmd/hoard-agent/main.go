@@ -1,13 +1,15 @@
 // Command hoard-agent is the desktop backup client. It serves a local web GUI
 // where you choose what to back up and when, and pushes those backups to a
 // hoard server's restic REST endpoint. Run it as a per-user service; open the
-// GUI at http://127.0.0.1:7420.
+// GUI at http://127.0.0.1:7420. `hoard-agent [flags] backup` instead runs one
+// backup with the saved config and exits (for systemd timers and cron).
 package main
 
 import (
 	"context"
 	"embed"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -54,6 +56,22 @@ func main() {
 			os.Exit(1)
 		}
 		log.Info("enrolled — configuration written; start the agent normally to back up")
+		os.Exit(0)
+	}
+
+	// One-shot mode: flags come first because the flag package stops parsing
+	// at the first non-flag argument.
+	if flag.NArg() > 0 {
+		if flag.NArg() != 1 || flag.Arg(0) != "backup" {
+			fmt.Fprintln(os.Stderr, "usage: hoard-agent [flags] [backup]")
+			os.Exit(2)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err := a.Backup(ctx) // logs its own outcome; reports to the server like the daemon
+		stop()
+		if err != nil {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 

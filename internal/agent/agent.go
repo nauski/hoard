@@ -40,7 +40,8 @@ type Config struct {
 	Paths []string `json:"paths"`
 	// Excludes are restic --exclude patterns.
 	Excludes []string `json:"excludes"`
-	// Schedule is a daily "HH:MM" backup time; empty disables the timer.
+	// Schedule is either a daily "HH:MM" backup time or an interval such as
+	// "1h" / "30m"; empty disables the scheduler.
 	Schedule string `json:"schedule"`
 	// Tags applied to each snapshot.
 	Tags []string `json:"tags"`
@@ -66,9 +67,11 @@ type Agent struct {
 	resticBin string
 	notifyBin string
 
-	running  bool
-	lastRun  RunResult
-	progress *restic.Progress // live progress while running, nil when idle
+	running   bool
+	lastRun   RunResult
+	lastStart time.Time        // when the most recent backup started (persisted in state.json)
+	boot      time.Time        // when this process loaded; see nextRun
+	progress  *restic.Progress // live progress while running, nil when idle
 
 	// live control/observation state for the running backup
 	cancel      context.CancelFunc
@@ -208,7 +211,9 @@ type RunResult struct {
 	Kind      string               `json:"kind,omitempty"`
 	Message   string               `json:"message"`
 	Summary   *restic.BackupResult `json:"summary,omitempty"`
-	Output    string               `json:"output,omitempty"`
+	// Warnings lists files restic could not read; the run is still OK.
+	Warnings []string `json:"warnings,omitempty"`
+	Output   string   `json:"output,omitempty"`
 }
 
 // Load reads the agent config from path (creating a default if absent).
@@ -216,7 +221,8 @@ func Load(path, resticBin, notifyBin string, log *slog.Logger) (*Agent, error) {
 	if resticBin == "" {
 		resticBin = "restic"
 	}
-	a := &Agent{cfgPath: path, log: log, resticBin: resticBin, notifyBin: notifyBin}
+	a := &Agent{cfgPath: path, log: log, resticBin: resticBin, notifyBin: notifyBin, boot: time.Now()}
+	a.loadLastStart()
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		host, _ := os.Hostname()
@@ -391,6 +397,12 @@ func (a *Agent) GetConfig() Config {
 func (a *Agent) SetConfig(c Config) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	c.Schedule = trimSpace(c.Schedule)
+	if c.Schedule != "" {
+		if _, err := nextRun(c.Schedule, time.Time{}, time.Time{}, time.Now()); err != nil {
+			return err
+		}
+	}
 	// Preserve fields not exposed for edit if the caller left them blank (the GUI
 	// posts only the fields it renders, so Host/ServerURL/Tags would otherwise be
 	// wiped on every save). Paths/Excludes ARE editable, so an empty value there
@@ -522,7 +534,9 @@ func (a *Agent) Backup(ctx context.Context) error {
 	a.progress = nil
 	cfg := a.cfg
 	a.mu.Unlock()
+	a.saveLastStart(time.Now())
 
+	reported := make(chan struct{})
 	defer func() {
 		a.mu.Lock()
 		a.running = false
@@ -532,18 +546,22 @@ func (a *Agent) Backup(ctx context.Context) error {
 		a.cancel = nil
 		a.mu.Unlock()
 		cancel()
+		<-reported // the final outcome report has been sent (bounded by its 5s HTTP timeout)
 	}()
 
 	start := time.Now()
 	rr := RunResult{StartedAt: start, Kind: "backup"}
 
-	go a.reportLoop(runCtx) // stream live state to the server (and pick up commands); also covers pre-flight failures below
+	// Stream live state to the server (and pick up commands); also covers
+	// pre-flight failures below.
+	go func() { defer close(reported); a.reportLoop(runCtx) }()
 
 	cl, err := a.resticClient()
 	if err != nil {
 		rr.EndedAt = time.Now()
 		rr.OK = false
 		rr.Message = err.Error()
+		a.log.Error("backup failed", "err", err)
 		a.storeRun(rr)
 		return err
 	}
@@ -586,6 +604,10 @@ func (a *Agent) Backup(ctx context.Context) error {
 	if summary != nil {
 		rr.Message = fmt.Sprintf("snapshot %s: %d files, %s added",
 			short(summary.SnapshotID), summary.TotalFiles, humanBytes(summary.DataAddedPacked))
+		if summary.WarningCount > 0 {
+			rr.Warnings = summary.Warnings
+			rr.Message += fmt.Sprintf(", %d files could not be read", summary.WarningCount)
+		}
 	} else {
 		rr.Message = "backup completed"
 	}
@@ -617,6 +639,7 @@ func (a *Agent) Restore(ctx context.Context, snapID, subpath, target, mode strin
 	a.progress = nil
 	a.mu.Unlock()
 
+	reported := make(chan struct{})
 	defer func() {
 		a.mu.Lock()
 		a.running = false
@@ -627,7 +650,9 @@ func (a *Agent) Restore(ctx context.Context, snapID, subpath, target, mode strin
 		a.cancel = nil
 		a.mu.Unlock()
 		cancel()
+		<-reported // see Backup
 	}()
+	go func() { defer close(reported); a.reportLoop(runCtx) }()
 
 	overwrite := "always"
 	if mode == "inplace" {
@@ -660,7 +685,6 @@ func (a *Agent) Restore(ctx context.Context, snapID, subpath, target, mode strin
 		},
 		OnStart: func(p *os.Process) { a.mu.Lock(); a.proc = p; a.mu.Unlock() },
 	}
-	go a.reportLoop(runCtx)
 	res, out, err := cl.Restore(runCtx, snapID, subpath, target, overwrite, false, hooks)
 	rr.EndedAt = time.Now()
 	rr.Output = out
@@ -705,9 +729,6 @@ func (a *Agent) Snapshots(ctx context.Context) ([]restic.Snapshot, error) {
 	return out, nil
 }
 
-// ScheduleTime returns the configured daily backup time, or "".
-func (a *Agent) ScheduleTime() string { return a.GetConfig().Schedule }
-
 func (a *Agent) storeRun(rr RunResult) {
 	a.mu.Lock()
 	a.lastRun = rr
@@ -727,7 +748,7 @@ func (a *Agent) sendNotify(bin string, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, bin, args...).Run(); err != nil {
-		a.log.Warn("desktop notification failed", "err", err)
+		a.log.Debug("desktop notification failed", "err", err)
 	}
 }
 
@@ -744,6 +765,42 @@ func (a *Agent) persist() error {
 		return err
 	}
 	return os.Rename(tmp, a.cfgPath)
+}
+
+func (a *Agent) statePath() string { return filepath.Join(filepath.Dir(a.cfgPath), "state.json") }
+
+type agentState struct {
+	LastBackupStart time.Time `json:"last_backup_start"`
+}
+
+// loadLastStart reads state.json; a missing or unreadable file means "never".
+func (a *Agent) loadLastStart() {
+	raw, err := os.ReadFile(a.statePath())
+	if err != nil {
+		return
+	}
+	var s agentState
+	if json.Unmarshal(raw, &s) == nil {
+		a.lastStart = s.LastBackupStart
+	}
+}
+
+// saveLastStart records when a backup started, in memory and in state.json.
+// A write failure only costs catch-up after a restart, so it is logged.
+func (a *Agent) saveLastStart(t time.Time) {
+	a.mu.Lock()
+	a.lastStart = t
+	a.mu.Unlock()
+	raw, _ := json.Marshal(agentState{LastBackupStart: t})
+	_ = os.MkdirAll(filepath.Dir(a.statePath()), 0o700)
+	tmp := a.statePath() + ".tmp"
+	err := os.WriteFile(tmp, raw, 0o600)
+	if err == nil {
+		err = os.Rename(tmp, a.statePath())
+	}
+	if err != nil {
+		a.log.Warn("could not save agent state", "err", err)
+	}
 }
 
 func cleanList(in []string) []string {
