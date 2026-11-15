@@ -28,8 +28,18 @@ import (
 
 // Client runs restic commands against a single repository.
 type Client struct {
-	bin  string
-	repo config.Repo
+	bin       string
+	repo      config.Repo
+	retryLock string
+}
+
+// WithRetryLock makes every command wait up to d (a restic duration such as
+// "30m") for a locked repository instead of failing at once, so a backup that
+// meets the server's prune (or the reverse) queues behind it. Needs restic
+// 0.16+; older binaries reject the flag, so only set it after checking Version.
+func (c *Client) WithRetryLock(d string) *Client {
+	c.retryLock = d
+	return c
 }
 
 // New returns a Client for the given repo. bin defaults to "restic" if empty.
@@ -54,10 +64,13 @@ func (c *Client) env() []string {
 	return env
 }
 
-// globalArgs returns restic persistent flags (bandwidth caps) to prepend before
-// the subcommand. Empty when no limits are configured.
+// globalArgs returns restic persistent flags (bandwidth caps, lock wait) to
+// prepend before the subcommand. Empty when none are configured.
 func (c *Client) globalArgs() []string {
 	var g []string
+	if c.retryLock != "" {
+		g = append(g, "--retry-lock", c.retryLock)
+	}
 	if c.repo.LimitUploadKiBps > 0 {
 		g = append(g, "--limit-upload", strconv.Itoa(c.repo.LimitUploadKiBps))
 	}

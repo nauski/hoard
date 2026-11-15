@@ -142,11 +142,19 @@ func New(cfg *config.Store, resticBin string, store *state.Store, log *slog.Logg
 	return &Scheduler{cfg: cfg, resticBin: resticBin, store: store, log: log}
 }
 
+// lockWait is how long server-side restic commands wait for a repository lock
+// held by a client backup before giving up.
+const lockWait = "10m"
+
 // hotC / coldC build a restic client from the CURRENT config, so changing the
 // repo/endpoint/credentials in Settings takes effect on the next operation
 // without a restart. restic.New just captures strings, so this is cheap.
-func (s *Scheduler) hotC() *restic.Client  { return restic.New(s.resticBin, s.cfg.Load().Hot) }
-func (s *Scheduler) coldC() *restic.Client { return restic.New(s.resticBin, s.cfg.Load().Cold) }
+func (s *Scheduler) hotC() *restic.Client {
+	return restic.New(s.resticBin, s.cfg.Load().Hot).WithRetryLock(lockWait)
+}
+func (s *Scheduler) coldC() *restic.Client {
+	return restic.New(s.resticBin, s.cfg.Load().Cold).WithRetryLock(lockWait)
+}
 
 // SetNotifier wires the alert sink after construction. This breaks the
 // construction cycle between the scheduler and the API server (which is itself
@@ -222,6 +230,12 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	s.beginJob("mirror", cancel)
 	defer s.endJob()
 
+	// Clear locks left behind by a crashed backup or job. `restic unlock` only
+	// removes stale locks (owner process gone, or not refreshed for 30 minutes),
+	// so a backup that is running right now keeps its lock.
+	if err := s.hotC().Unlock(jctx); err != nil {
+		s.log.Warn("unlock hot repo", "err", err)
+	}
 	cfg := s.cfg.Load()
 	if cfg.Retention.ApplyToHot {
 		if !s.prune(jctx, s.hotC(), "prune-hot", "the hot repo") {
@@ -280,6 +294,9 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	s.log.Info("mirror ok")
 
 	// Retention runs on the cold repo right after a successful copy.
+	if err := s.coldC().Unlock(jctx); err != nil {
+		s.log.Warn("unlock cold repo", "err", err)
+	}
 	s.prune(jctx, s.coldC(), "prune", "e2")
 }
 

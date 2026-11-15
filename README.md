@@ -404,6 +404,19 @@ reverse proxy with auth and give rest-server a `.htpasswd`
 (`HOARD_REST_OPTS=""` + a mounted credentials file, then
 `rest:http://user:pass@server:8000/hot`).
 
+**Append-only.** Set `HOARD_REST_APPEND_ONLY=true` on the server container and
+rest-server runs with `--append-only`: clients can add backups, find and restore,
+but cannot delete or overwrite anything in the repo, so a mistake or compromise
+on a client cannot destroy its history. Retention, deletes and unpin/release
+still work from the server dashboard, because hoardd writes to the hot repo on
+disk. This limits what port `:8000` can do; the dashboard on `:8080` can still
+delete, so it needs the same care as before.
+
+**Locks.** A backup that meets the server's prune or check waits up to 30
+minutes for the repository instead of failing (needs restic 0.16+ on the
+client), and server jobs wait up to 10 minutes for a running backup. Before each
+nightly run the server clears stale locks left by a crashed backup.
+
 ## Status
 
 The core loop (push → mirror → prune → check → freshness/alerts → dashboard), the

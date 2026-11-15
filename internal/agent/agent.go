@@ -69,6 +69,8 @@ type Agent struct {
 
 	running   bool
 	lastRun   RunResult
+	verOnce   sync.Once
+	retryLock bool             // local restic supports --retry-lock
 	lastStart time.Time        // when the most recent backup started (persisted in state.json)
 	boot      time.Time        // when this process loaded; see nextRun
 	progress  *restic.Progress // live progress while running, nil when idle
@@ -508,10 +510,31 @@ func (a *Agent) resticClient() (*restic.Client, error) {
 	if a.cfg.Repository == "" {
 		return nil, fmt.Errorf("no server repository configured")
 	}
-	return restic.New(a.resticBin, config.Repo{
+	cl := restic.New(a.resticBin, config.Repo{
 		Repository: a.cfg.Repository, Password: pw,
 		LimitUploadKiBps: a.cfg.LimitUploadKiBps, LimitDownloadKiBps: a.cfg.LimitDownloadKiBps,
-	}), nil
+	})
+	if a.canRetryLock() {
+		cl.WithRetryLock(lockWait)
+	}
+	return cl, nil
+}
+
+// lockWait is how long a backup waits for the server's prune or check to
+// release the repository before it counts as failed.
+const lockWait = "30m"
+
+// canRetryLock reports whether the local restic understands --retry-lock
+// (0.16+). Checked once; an unknown version is treated as too old, because an
+// unsupported flag would fail every backup.
+func (a *Agent) canRetryLock() bool {
+	a.verOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		maj, min, err := restic.Version(ctx, a.resticBin)
+		a.retryLock = err == nil && (maj > 0 || min >= 16)
+	})
+	return a.retryLock
 }
 
 // Backup runs one backup now. It is safe to call concurrently; a second call

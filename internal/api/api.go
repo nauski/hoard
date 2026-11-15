@@ -48,8 +48,16 @@ func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store 
 
 // hot / cold build a restic client from the current config so repo/endpoint/
 // credential changes in Settings apply without a restart.
-func (s *Server) hot() *restic.Client  { return restic.New(s.resticBin, s.cfg.Load().Hot) }
-func (s *Server) cold() *restic.Client { return restic.New(s.resticBin, s.cfg.Load().Cold) }
+// lockWait: see scheduler.lockWait. Handlers are also bounded by their own
+// request timeouts.
+const lockWait = "10m"
+
+func (s *Server) hot() *restic.Client {
+	return restic.New(s.resticBin, s.cfg.Load().Hot).WithRetryLock(lockWait)
+}
+func (s *Server) cold() *restic.Client {
+	return restic.New(s.resticBin, s.cfg.Load().Cold).WithRetryLock(lockWait)
+}
 
 // Handler returns the root mux (dashboard + /api routes).
 func (s *Server) Handler() http.Handler {

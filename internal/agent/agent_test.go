@@ -221,3 +221,27 @@ func TestRestorePathBesideOriginal(t *testing.T) {
 		t.Fatalf("file not restored into %s: %v", to, err)
 	}
 }
+
+// TestRetryLockOnlyOnNewRestic: --retry-lock arrived in restic 0.16; passing
+// it to an older binary would fail every backup.
+func TestRetryLockOnlyOnNewRestic(t *testing.T) {
+	fake := func(version string) *Agent {
+		bin := filepath.Join(t.TempDir(), "restic")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'restic "+version+" compiled with go'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return &Agent{resticBin: bin}
+	}
+	if fake("0.12.1").canRetryLock() {
+		t.Error("0.12.1 must not get --retry-lock")
+	}
+	if !fake("0.16.4").canRetryLock() {
+		t.Error("0.16.4 should get --retry-lock")
+	}
+	if !fake("0.19.1").canRetryLock() {
+		t.Error("0.19.1 should get --retry-lock")
+	}
+	if (&Agent{resticBin: "/nonexistent/restic"}).canRetryLock() {
+		t.Error("unknown version must not get --retry-lock")
+	}
+}

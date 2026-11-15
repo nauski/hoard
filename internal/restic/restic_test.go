@@ -199,6 +199,9 @@ func TestGlobalArgs(t *testing.T) {
 	if n := New("restic", config.Repo{Repository: "/x"}).globalArgs(); len(n) != 0 {
 		t.Fatalf("expected no flags when unset, got %v", n)
 	}
+	if l := New("restic", config.Repo{Repository: "/x"}).WithRetryLock("30m").globalArgs(); strings.Join(l, " ") != "--retry-lock 30m" {
+		t.Fatalf("retry-lock = %v", l)
+	}
 	up := New("restic", config.Repo{Repository: "/x", LimitUploadKiBps: 42}).globalArgs()
 	if strings.Join(up, " ") != "--limit-upload 42" {
 		t.Fatalf("upload-only = %v", up)
