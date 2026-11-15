@@ -23,6 +23,7 @@
   table { width:100%; border-collapse:collapse; }
   th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
   th { color:var(--muted); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  [hidden] { display:none !important; }  /* class rules such as .badge set display and would otherwise override the hidden attribute */
   .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
   .b-ok { background:rgba(63,185,80,.15); color:var(--ok); }
   .b-bad { background:rgba(248,81,73,.15); color:var(--bad); }
