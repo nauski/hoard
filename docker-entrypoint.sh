@@ -6,6 +6,13 @@ set -eu
 HOT_DIR="${HOARD_HOT_DIR:-/data/hot}"
 REST_ADDR="${HOARD_REST_ADDR:-:8000}"
 REST_OPTS="${HOARD_REST_OPTS:---no-auth}"   # set to "" and mount .htpasswd for auth
+# Append-only: clients can add backups but cannot delete or overwrite them, so a
+# compromised or misbehaving client cannot destroy its own history. Deletes,
+# retention and unpin/release still work from the hoard dashboard, because
+# hoardd writes to the hot repo on disk, not through rest-server.
+if [ "${HOARD_REST_APPEND_ONLY:-false}" = "true" ]; then
+  REST_OPTS="${REST_OPTS} --append-only"
+fi
 
 mkdir -p "$HOT_DIR"
 
