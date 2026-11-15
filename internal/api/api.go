@@ -95,6 +95,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/report", s.handleReport)
 	mux.HandleFunc("GET /api/running", s.handleRunning)
 	mux.HandleFunc("POST /api/clients/control", s.handleClientControl)
+	mux.HandleFunc("GET /api/clients/config", s.handleClientConfig)
+	mux.HandleFunc("POST /api/clients/config", s.handleSetClientConfig)
+	mux.HandleFunc("POST /api/clients/backup", s.handleClientBackup)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -148,6 +151,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			}
 			c.Busy = true
 			clients[lc.Host] = c
+		}
+	}
+	for h, c := range clients {
+		if info := s.store.ClientInfoFor(h); !info.SeenAt.IsZero() {
+			seen := info.SeenAt
+			c.AgentVersion, c.Managed, c.SeenAt = info.AgentVersion, info.Managed, &seen
+			clients[h] = c
 		}
 	}
 	writeJSON(w, http.StatusOK, statusResponse{

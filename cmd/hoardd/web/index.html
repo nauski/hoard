@@ -114,6 +114,29 @@
     <div id="runningList"></div>
   </div>
 
+  <div class="card" id="manageCard" hidden>
+    <h2>Manage <span id="mgHost" class="mono"></span> <button class="mini" onclick="$('#manageCard').hidden=true">close</button></h2>
+    <div id="mgState" class="sub" style="margin-bottom:8px"></div>
+    <div class="setgrid">
+      <div style="grid-column:1/-1"><label class="sub">Paths to back up (one per line, absolute)</label><textarea id="mgPaths" rows="4" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
+      <div style="grid-column:1/-1"><label class="sub">Excludes (one restic pattern per line)</label><textarea id="mgExcludes" rows="4" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
+      <div style="grid-column:1/-1"><label class="sub">Exclude files on the client (one path per line)</label><textarea id="mgExFiles" rows="2" style="width:100%;font-family:ui-monospace,monospace"></textarea></div>
+      <div><label class="sub">Schedule<span class="help" tabindex="0" data-tip="A daily time (21:00) or an interval (1h, 2h). Leave empty when a systemd timer runs the backups, or for manual only.">ⓘ</span></label><input id="mgSched" type="text" placeholder="2h or 21:00"></div>
+      <div><label class="sub">Skip files larger than</label><input id="mgLarger" type="text" placeholder="e.g. 1G"></div>
+      <div><label class="sub">Skip folders containing</label><input id="mgIfPresent" type="text" placeholder=".nobackup"></div>
+      <div><label class="sub">nice (0-19)</label><input id="mgNice" type="text" style="width:60px"></div>
+      <div><label class="sub">I/O priority</label><select id="mgIonice"><option value="">default</option><option value="idle">idle</option><option value="best-effort">best-effort</option></select></div>
+      <div><label class="sub">read concurrency (0 = default)</label><input id="mgReadConc" type="text" style="width:60px"></div>
+      <div><label><input type="checkbox" id="mgCaches"> skip cache folders (CACHEDIR.TAG)</label></div>
+      <div><label><input type="checkbox" id="mgNoScan"> no pre-scan (faster start, no percentage)</label></div>
+    </div>
+    <div class="bar" style="margin-top:10px">
+      <button onclick="saveManage()">Save for this client</button>
+      <button class="secondary" onclick="backupNowManage()">Back up now</button>
+      <span id="mgMsg" class="sub"></span>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Clients</h2>
     <table>
@@ -421,6 +444,8 @@ async function refresh(){
            : (c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>'))
         + (c.own_repo ? ' <span class="badge b-idle" title="This machine has its own repository and login; other machines cannot read its backups">own repo</span>' : (st.private_repos ? ' <span class="badge b-warn" title="Still on the shared repo, which clients can no longer reach. Enroll this machine again to give it its own repository.">shared repo: re-enroll</span>' : ''))
         + (c.hot_only ? ' <span class="badge b-idle" title="Excluded from the offsite mirror: this host exists only on this server">hot only</span>' : '');
+      const manageBtn = c.own_repo ? ' <button class="mini" onclick="openManage(\''+esc(c.hostname)+'\')">Manage</button>' : '';
+      const seenLine = c.seen_at ? '<div class="sub">agent '+esc(c.agent_version||"?")+' · checked in '+age(c.seen_at)+' ago'+(c.managed?' · managed here':'')+'</div>' : '';
       const an = c.anomaly;
       const anCell = an ? '<div style="margin-top:4px"><span class="badge b-bad" title="The newest backup has far fewer files than the one before it">'+(an.files_before-an.files_after)+' files vanished</span> '
         + '<button class="mini" onclick="reviewAnomaly(\''+esc(c.hostname)+'\',\''+esc(an.new_id)+'\',\''+esc(an.prev_id)+'\')">Review</button> '
@@ -434,7 +459,7 @@ async function refresh(){
           ? '<span style="color:var(--ok)">✓ ok</span>'
           : '<span style="color:var(--bad)">✗ failed'+(o.consecutive_failures>1?(' ×'+o.consecutive_failures):'')+'</span><div class="sub" title="'+esc(raw).replace(/"/g,'&quot;')+'">'+esc(raw.slice(0,60))+'</div>';
       }
-      return `<tr><td class="mono">${c.hostname}</td><td>${never?"never":fmt(c.last_snapshot)}</td>
+      return `<tr><td><span class="mono">${c.hostname}</span>${manageBtn}${seenLine}</td><td>${never?"never":fmt(c.last_snapshot)}</td>
         <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}${anCell}</td><td>${runCell}</td></tr>`;
     }).join("") : '<tr><td colspan="7" class="sub">no client snapshots yet</td></tr>';
   }catch(e){ /* transient */ }
@@ -539,6 +564,45 @@ async function showDiff(id, parent){
     const more = total > (d.changes||[]).length ? '<div class="sub">…showing first '+((d.changes||[]).length)+' of '+total+' changes</div>' : "";
     el.innerHTML="<b>+"+d.added+" −"+d.removed+" ~"+d.changed+"</b><br>"+rows+more;
   }catch(e){ el.innerHTML="diff failed"; }
+}
+// ---- Manage a client's backup settings from here. The client fetches them at
+// its next check-in and applies them only if remote management is on there.
+let mgHost="";
+const mgLines=id=>$("#"+id).value.split("\n").map(x=>x.trim()).filter(Boolean);
+async function openManage(host){
+  mgHost=host; $("#mgHost").textContent=host; $("#mgMsg").textContent=""; $("#manageCard").hidden=false;
+  const r=await fetch("/api/clients/config?host="+encodeURIComponent(host)); const j=await r.json();
+  const info=j.info||{}, seen=info.seen_at && !String(info.seen_at).startsWith("0001");
+  // Start from what was saved here, else from what the client reports running.
+  const s=j.desired || info.settings || {};
+  $("#mgPaths").value=(s.paths||[]).join("\n"); $("#mgExcludes").value=(s.excludes||[]).join("\n");
+  $("#mgExFiles").value=(s.exclude_files||[]).join("\n"); $("#mgSched").value=s.schedule||"";
+  $("#mgLarger").value=s.exclude_larger_than||""; $("#mgIfPresent").value=(s.exclude_if_present||[]).join(", ");
+  $("#mgNice").value=s.nice||0; $("#mgIonice").value=s.ionice_class||""; $("#mgReadConc").value=s.read_concurrency||0;
+  $("#mgCaches").checked=!!s.exclude_caches; $("#mgNoScan").checked=!!s.no_scan;
+  let state;
+  if(!seen) state="This client has not checked in yet (needs hoard-agent 0.32 or newer). Settings saved here wait for it.";
+  else if(!info.managed) state="Remote management is OFF on this client, so it will ignore settings saved here. Turn it on there with: hoard-agent manage on (then restart the agent). Shown below is what it is running now.";
+  else if(j.pending) state="Saved settings (version "+j.desired_version+") are waiting for the client to fetch them; it last checked in "+age(info.seen_at)+" ago and has applied version "+(info.applied_version||0)+".";
+  else state="In sync: the client checked in "+age(info.seen_at)+" ago"+(j.desired?" and runs version "+j.desired_version+" of the settings saved here.":" and runs its own local settings, shown below.");
+  $("#mgState").textContent=state;
+  $("#manageCard").scrollIntoView({block:"center"});
+}
+async function saveManage(){
+  const num=id=>parseInt($("#"+id).value,10)||0;
+  const settings={paths:mgLines("mgPaths"),excludes:mgLines("mgExcludes"),exclude_files:mgLines("mgExFiles"),
+    exclude_if_present:$("#mgIfPresent").value.split(",").map(x=>x.trim()).filter(Boolean),
+    exclude_larger_than:$("#mgLarger").value.trim(),exclude_caches:$("#mgCaches").checked,schedule:$("#mgSched").value.trim(),
+    no_scan:$("#mgNoScan").checked,read_concurrency:num("mgReadConc"),nice:num("mgNice"),ionice_class:$("#mgIonice").value};
+  const r=await fetch("/api/clients/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host:mgHost,settings})});
+  const j=await r.json();
+  if(!r.ok){ $("#mgMsg").textContent="error: "+(j.error||r.status); return; }
+  await openManage(mgHost);
+  $("#mgMsg").textContent="saved as version "+j.version+". An agent that runs all the time fetches it within a minute; a timer-driven one at its next run.";
+}
+async function backupNowManage(){
+  const r=await fetch("/api/clients/backup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host:mgHost})});
+  $("#mgMsg").textContent=r.ok?"requested. A continuously running, managed agent starts within a minute; a timer-driven agent cannot be started from here.":"error";
 }
 // Hand a pinned/held snapshot back to normal retention.
 async function untag(id, tag){

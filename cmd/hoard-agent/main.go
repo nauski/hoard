@@ -129,6 +129,7 @@ func main() {
 const usage = `usage: hoard-agent [flags]                       run the GUI and scheduler
        hoard-agent [flags] backup [-pin NOTE]    back up once and exit; -pin keeps the snapshot past retention
        hoard-agent [flags] backup -dry-run       show what a backup would include, without writing anything
+       hoard-agent [flags] manage on|off         let the server dashboard set this machine's backup settings (off by default)
        hoard-agent [flags] find PATTERN          search this host's backups by file name ("wt-perf", "*.jsonl")
        hoard-agent [flags] restore -path PATH [-before TIME] [-to DIR] [-inplace]
                                                  restore PATH from the newest backup that has it
@@ -163,7 +164,21 @@ func runCommand(ctx context.Context, a *agent.Agent, args []string) error {
 			}
 			return nil
 		}
+		a.CheckIn(ctx, false)         // pick up settings changed on the server dashboard first
 		return a.BackupPin(ctx, *pin) // logs its own outcome; reports to the server like the daemon
+	case "manage":
+		if len(args) != 2 || (args[1] != "on" && args[1] != "off") {
+			return errUsage
+		}
+		if err := a.SetRemoteManagement(args[1] == "on"); err != nil {
+			return err
+		}
+		if args[1] == "on" {
+			fmt.Println("remote management is ON: the hoard server dashboard can now set this machine's paths, excludes, schedule and priority, and start a backup. It cannot change where backups go. If the agent runs as a service, restart it now (systemctl --user restart hoard-agent) so it loads this setting.")
+		} else {
+			fmt.Println("remote management is OFF: settings sent by the server are ignored.")
+		}
+		return nil
 	case "find":
 		if fs.Parse(args[1:]) != nil || fs.NArg() != 1 {
 			return errUsage

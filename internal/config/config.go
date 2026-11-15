@@ -75,6 +75,11 @@ type Client struct {
 	// HTTPPassword is the client's rest-server (and report API) login; the
 	// user name is the client name.
 	HTTPPassword string `json:"http_password"`
+	// Managed is the settings the dashboard wants this client to run with;
+	// nil until someone saves them. ManagedVersion counts those saves, so the
+	// client can tell a new push from one it already applied.
+	Managed        *ManagedSettings `json:"managed,omitempty"`
+	ManagedVersion int              `json:"managed_version,omitempty"`
 }
 
 // ReposDir is where per-client repositories live: next to the shared hot repo.

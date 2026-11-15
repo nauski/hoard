@@ -58,9 +58,14 @@ func (a *Agent) RunScheduler(ctx context.Context) {
 	defer t.Stop()
 	var skipped time.Time // the due slot we already logged a skip for
 	for {
+		// Check in first, so settings changed on the server dashboard apply
+		// before this minute's schedule decision.
+		requested := a.CheckIn(ctx, true)
 		now := time.Now()
 		next, err := a.NextRun(now)
 		switch {
+		case requested:
+			// a backup was just started on the server's request
 		case err != nil:
 			a.log.Warn("schedule ignored", "err", err)
 		case next.IsZero() || now.Before(next):

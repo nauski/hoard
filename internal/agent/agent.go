@@ -24,6 +24,7 @@ import (
 
 	"github.com/nauski/hoard/internal/config"
 	"github.com/nauski/hoard/internal/restic"
+	"github.com/nauski/hoard/internal/version"
 )
 
 // Config is the agent's persisted configuration, edited via the GUI.
@@ -72,6 +73,13 @@ type Config struct {
 	// speed (KiB/s); 0 = unlimited.
 	LimitUploadKiBps   int `json:"limit_upload_kibps"`
 	LimitDownloadKiBps int `json:"limit_download_kibps"`
+	// RemoteManagement lets the hoard server's dashboard change this agent's
+	// backup settings (paths, excludes, schedule, priority) and start a backup.
+	// Off by default; turn it on locally with `hoard-agent manage on`. The
+	// server can never change the repository, password file or server address.
+	RemoteManagement bool `json:"remote_management,omitempty"`
+	// ManagedVersion is the last settings push from the server that was applied.
+	ManagedVersion int `json:"managed_version,omitempty"`
 	// NotifyDesktop controls whether desktop notifications are sent on backup completion.
 	// Defaults to enabled (nil or true).
 	NotifyDesktop *bool `json:"notify_desktop,omitempty"`
@@ -357,17 +365,140 @@ func (a *Agent) backupOutcome() *reportOutcome {
 	return &reportOutcome{OK: rr.OK, Message: rr.Message}
 }
 
+// managedSettings returns the part of the config the server may manage.
+func (c Config) managedSettings() config.ManagedSettings {
+	return config.ManagedSettings{
+		Paths: c.Paths, Excludes: c.Excludes, ExcludeFiles: c.ExcludeFiles,
+		ExcludeIfPresent: c.ExcludeIfPresent, ExcludeLargerThan: c.ExcludeLargerThan,
+		ExcludeCaches: c.ExcludeCaches, Schedule: c.Schedule, NoScan: c.NoScan,
+		ReadConcurrency: c.ReadConcurrency, Nice: c.Nice, IONiceClass: c.IONiceClass,
+	}
+}
+
+// SetRemoteManagement turns server-side management of this agent on or off.
+func (a *Agent) SetRemoteManagement(on bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.RemoteManagement = on
+	return a.persist()
+}
+
+// CheckIn tells the server this agent exists, what it is configured to do and
+// which settings push it last applied, and acts on the reply: new settings
+// and "back up now", both only when remote management is on. Daemons call it
+// every minute, one-shot runs once before backing up. It is how a headless
+// machine is managed without anything connecting in to it. It reports whether
+// it started a backup, so the caller does not start a second one alongside.
+func (a *Agent) CheckIn(ctx context.Context, allowBackup bool) (startedBackup bool) {
+	base := a.ServerBaseURL()
+	if base == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	send := func() serverReply {
+		cfg := a.GetConfig()
+		live := a.Live()
+		return a.reportFull(client, base, &live, nil, map[string]any{
+			"checkin":         true,
+			"managed":         cfg.RemoteManagement,
+			"applied_version": cfg.ManagedVersion,
+			"settings":        cfg.managedSettings(),
+			"agent_version":   version.Version,
+		})
+	}
+	reply := send()
+	if reply.Config != nil {
+		if err := a.applyManaged(reply.Config.Version, reply.Config.SettingsJSON, reply.Config.MAC); err != nil {
+			a.log.Warn("settings from the server were not applied", "err", err)
+		} else {
+			send() // tell the server right away, so its dashboard stops showing "pending"
+		}
+	}
+	if reply.Command == "backup" && allowBackup && a.GetConfig().RemoteManagement {
+		if _, running := a.LastRun(); running {
+			a.log.Info("backup requested from the server dashboard, but one is already running")
+			return false
+		}
+		a.log.Info("backup requested from the server dashboard")
+		go func() {
+			if err := a.Backup(ctx); err != nil {
+				a.log.Error("requested backup failed", "err", err)
+			}
+		}()
+		return true
+	}
+	return false
+}
+
+// applyManaged installs a settings push after checking that this agent opted
+// in, that the push is signed with this client's repository password, and that
+// it is newer than the last one applied.
+func (a *Agent) applyManaged(ver int, settingsJSON, mac string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.cfg.RemoteManagement {
+		return fmt.Errorf("remote management is off on this machine (enable with: hoard-agent manage on)")
+	}
+	if ver <= a.cfg.ManagedVersion {
+		return nil // already applied
+	}
+	key := os.Getenv("RESTIC_PASSWORD")
+	if a.cfg.PasswordFile != "" {
+		b, err := os.ReadFile(a.cfg.PasswordFile)
+		if err != nil {
+			return fmt.Errorf("read password file: %w", err)
+		}
+		key = trimNewline(string(b))
+	}
+	if !config.VerifyManaged(key, a.cfg.Host, ver, settingsJSON, mac) {
+		return fmt.Errorf("signature check failed; ignoring the push")
+	}
+	var m config.ManagedSettings
+	if err := json.Unmarshal([]byte(settingsJSON), &m); err != nil {
+		return fmt.Errorf("unreadable settings: %w", err)
+	}
+	if err := m.Validate(); err != nil {
+		return err
+	}
+	c := &a.cfg
+	c.Paths, c.Excludes, c.ExcludeFiles = cleanList(m.Paths), cleanList(m.Excludes), cleanList(m.ExcludeFiles)
+	c.ExcludeIfPresent, c.ExcludeLargerThan, c.ExcludeCaches = cleanList(m.ExcludeIfPresent), m.ExcludeLargerThan, m.ExcludeCaches
+	c.Schedule, c.NoScan, c.ReadConcurrency = m.Schedule, m.NoScan, m.ReadConcurrency
+	c.Nice, c.IONiceClass = m.Nice, m.IONiceClass
+	c.ManagedVersion = ver
+	a.log.Info("applied settings from the server dashboard", "version", ver, "paths", len(c.Paths), "schedule", c.Schedule)
+	return a.persist()
+}
+
+// serverReply is what the server answers to a report.
+type serverReply struct {
+	Command string `json:"command"`
+	Config  *struct {
+		Version      int    `json:"version"`
+		SettingsJSON string `json:"settings_json"`
+		MAC          string `json:"mac"`
+	} `json:"config"`
+}
+
 // report POSTs one live snapshot (and, on the final report, the completed
 // backup's outcome) to the server and returns any queued command.
 func (a *Agent) report(client *http.Client, base string, live *Live, outcome *reportOutcome) string {
+	return a.reportFull(client, base, live, outcome, nil).Command
+}
+
+// reportFull is report with extra payload fields and the whole reply.
+func (a *Agent) reportFull(client *http.Client, base string, live *Live, outcome *reportOutcome, extra map[string]any) serverReply {
 	payload := map[string]any{"host": a.Host(), "live": live}
 	if outcome != nil {
 		payload["last_result"] = outcome
 	}
+	for k, v := range extra {
+		payload[k] = v
+	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, base+"/api/report", bytes.NewReader(body))
 	if err != nil {
-		return ""
+		return serverReply{}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// A client with its own repository logs in to the report API with the same
@@ -378,14 +509,12 @@ func (a *Agent) report(client *http.Client, base string, live *Live, outcome *re
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return serverReply{}
 	}
 	defer resp.Body.Close()
-	var out struct {
-		Command string `json:"command"`
-	}
+	var out serverReply
 	_ = json.NewDecoder(resp.Body).Decode(&out)
-	return out.Command
+	return out
 }
 
 // Ls lists one directory level inside a snapshot on the server (hot repo).

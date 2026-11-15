@@ -59,6 +59,10 @@ type Client struct {
 	// Busy is set only in the status API: the client is reporting a running
 	// backup or restore right now. Never stored.
 	Busy bool `json:"busy,omitempty"`
+	// From the client's last check-in; set only in the status API.
+	AgentVersion string     `json:"agent_version,omitempty"`
+	Managed      bool       `json:"managed,omitempty"`
+	SeenAt       *time.Time `json:"seen_at,omitempty"`
 	// Anomaly is set when the latest backup lost a large share of its files; it
 	// stays until dismissed on the dashboard.
 	Anomaly *Anomaly `json:"anomaly,omitempty"`
@@ -78,6 +82,15 @@ type Anomaly struct {
 	Held bool `json:"held"`
 }
 
+// ClientInfo is what a client last told the server about itself in a check-in.
+type ClientInfo struct {
+	SeenAt         time.Time       `json:"seen_at"`
+	AgentVersion   string          `json:"agent_version,omitempty"`
+	Managed        bool            `json:"managed"`         // the client accepts settings from the server
+	AppliedVersion int             `json:"applied_version"` // last settings push it applied
+	Settings       json.RawMessage `json:"settings,omitempty"`
+}
+
 // Store is the persisted, concurrency-safe application state.
 type Store struct {
 	mu      sync.Mutex
@@ -85,10 +98,11 @@ type Store struct {
 	History []JobResult       `json:"history"`
 	Clients map[string]Client `json:"clients"`
 	// LastByJob is the most recent result per job name, for quick dashboard reads.
-	LastByJob      map[string]JobResult `json:"last_by_job"`
-	ClientOutcomes map[string]Outcome   `json:"client_outcomes"`
-	LastVerify     *VerifyResult        `json:"last_verify,omitempty"`
-	SizeSamples    []SizeSample         `json:"size_samples,omitempty"`
+	LastByJob      map[string]JobResult  `json:"last_by_job"`
+	ClientOutcomes map[string]Outcome    `json:"client_outcomes"`
+	ClientInfo     map[string]ClientInfo `json:"client_info,omitempty"`
+	LastVerify     *VerifyResult         `json:"last_verify,omitempty"`
+	SizeSamples    []SizeSample          `json:"size_samples,omitempty"`
 }
 
 // Load reads the store from path, or returns an empty one if it doesn't exist.
@@ -136,6 +150,25 @@ func (s *Store) SetClients(clients map[string]Client) {
 	defer s.mu.Unlock()
 	s.Clients = clients
 	s.save()
+}
+
+// SetClientInfo records a client's latest check-in and persists it, so the
+// dashboard can show a timer-driven client's settings between its runs.
+func (s *Store) SetClientInfo(host string, info ClientInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ClientInfo == nil {
+		s.ClientInfo = map[string]ClientInfo{}
+	}
+	s.ClientInfo[host] = info
+	s.save()
+}
+
+// ClientInfoFor returns host's last check-in (zero value if none).
+func (s *Store) ClientInfoFor(host string) ClientInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ClientInfo[host]
 }
 
 // ClearAnomaly dismisses host's anomaly and persists.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nauski/hoard/internal/config"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -83,6 +85,19 @@ type reportRequest struct {
 	Host       string          `json:"host"`
 	Live       json.RawMessage `json:"live"`
 	LastResult *reportOutcome  `json:"last_result"`
+	// Sent by agents 0.32+ in their periodic check-in.
+	CheckIn        bool            `json:"checkin"`
+	Managed        bool            `json:"managed"`
+	AppliedVersion int             `json:"applied_version"`
+	Settings       json.RawMessage `json:"settings"`
+	AgentVersion   string          `json:"agent_version"`
+}
+
+// managedPush is a signed settings push handed to a client in a report reply.
+type managedPush struct {
+	Version      int    `json:"version"`
+	SettingsJSON string `json:"settings_json"`
+	MAC          string `json:"mac"`
 }
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +116,91 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	if req.LastResult != nil {
 		s.recordOutcome(req.Host, req.LastResult.OK, req.LastResult.Message)
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"command": cmd})
+	reply := map[string]any{"command": cmd}
+	if req.CheckIn {
+		s.store.SetClientInfo(req.Host, state.ClientInfo{
+			SeenAt: time.Now(), AgentVersion: req.AgentVersion, Managed: req.Managed,
+			AppliedVersion: req.AppliedVersion, Settings: req.Settings,
+		})
+		// Hand over settings saved on the dashboard that this client has not
+		// applied yet. Only clients with their own repository can be managed:
+		// the push is signed with that repository's password.
+		if cl, ok := s.cfg.Load().Clients[req.Host]; ok && req.Managed && cl.Managed != nil && cl.ManagedVersion > req.AppliedVersion {
+			raw, _ := json.Marshal(cl.Managed)
+			reply["config"] = managedPush{
+				Version: cl.ManagedVersion, SettingsJSON: string(raw),
+				MAC: config.SignManaged(cl.Password, req.Host, cl.ManagedVersion, string(raw)),
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+// handleClientConfig (GET) returns what a client last reported about itself
+// and what the dashboard has saved for it.
+func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
+	host := r.URL.Query().Get("host")
+	cl, own := s.cfg.Load().Clients[host]
+	info := s.store.ClientInfoFor(host)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host":            host,
+		"own_repo":        own,
+		"info":            info,
+		"desired":         cl.Managed,
+		"desired_version": cl.ManagedVersion,
+		"pending":         own && cl.Managed != nil && cl.ManagedVersion > info.AppliedVersion,
+	})
+}
+
+// handleSetClientConfig saves new settings for a client. The client applies
+// them at its next check-in, if it has remote management turned on.
+func (s *Server) handleSetClientConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host     string                 `json:"host"`
+		Settings config.ManagedSettings `json:"settings"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Host == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing host or settings"})
+		return
+	}
+	if _, ok := s.cfg.Load().Clients[req.Host]; !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "only clients with their own repository can be managed from here"})
+		return
+	}
+	if err := req.Settings.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	var ver int
+	err := s.cfg.Update(func(c *config.Config) {
+		clients := maps.Clone(c.Clients)
+		cl := clients[req.Host]
+		// Stay ahead of whatever the client says it applied, e.g. after the
+		// server's config was restored from an older copy.
+		ver = max(cl.ManagedVersion, s.store.ClientInfoFor(req.Host).AppliedVersion) + 1
+		cl.Managed, cl.ManagedVersion = &req.Settings, ver
+		clients[req.Host] = cl
+		c.Clients = clients
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": ver})
+}
+
+// handleClientBackup asks a managed client to start a backup at its next
+// check-in. Only an agent that runs continuously can act on it.
+func (s *Server) handleClientBackup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host string `json:"host"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Host == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing host"})
+		return
+	}
+	s.live.setCommand(req.Host, "backup")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // recordOutcome maintains the per-client consecutive-failure count and fires the

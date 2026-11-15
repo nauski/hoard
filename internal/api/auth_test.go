@@ -225,3 +225,83 @@ func TestStatusListsEnrolledAndBusyClients(t *testing.T) {
 		t.Fatalf("frame = %+v (present %v), want listed and idle", c, ok)
 	}
 }
+
+// TestManagedSettingsPush: settings saved on the dashboard reach a client that
+// opted in, signed with its repository password, and nobody else.
+func TestManagedSettingsPush(t *testing.T) {
+	s, cfg, _ := authServer(t, func(c *config.Config) {
+		c.DashboardPassword = "dash"
+		c.Clients = map[string]config.Client{
+			"frame": {Password: "frame-repo-pw", HTTPPassword: "frame-login"},
+			"vm":    {Password: "vm-repo-pw", HTTPPassword: "vm-login"},
+		}
+	})
+	admin := func(r *http.Request) { r.SetBasicAuth("x", "dash") }
+	frame := func(r *http.Request) { r.SetBasicAuth("frame", "frame-login") }
+	save := `{"host":"frame","settings":{"paths":["/home/me"],"schedule":"2h","nice":19}}`
+
+	if rec := do(t, s, "POST", "/api/clients/config", save, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("saving settings without the dashboard password = %d, want 401", rec.Code)
+	}
+	if rec := do(t, s, "POST", "/api/clients/config", save, frame); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a client saving settings with its own login = %d, want 401", rec.Code)
+	}
+	if rec := do(t, s, "POST", "/api/clients/config", `{"host":"frame","settings":{"paths":["relative"]}}`, admin); rec.Code != http.StatusBadRequest {
+		t.Fatalf("relative path accepted: %d", rec.Code)
+	}
+	if rec := do(t, s, "POST", "/api/clients/config", `{"host":"frame","settings":{"schedule":"hourly"}}`, admin); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad schedule accepted: %d", rec.Code)
+	}
+	if rec := do(t, s, "POST", "/api/clients/config", save, admin); rec.Code != http.StatusOK {
+		t.Fatalf("save = %d %s", rec.Code, rec.Body)
+	}
+	if cfg.Load().Clients["frame"].ManagedVersion != 1 || cfg.Load().Clients["vm"].Managed != nil {
+		t.Fatalf("stored: %+v", cfg.Load().Clients)
+	}
+
+	checkin := func(host string, managed bool, applied int, auth func(*http.Request)) *managedPush {
+		body := `{"host":"` + host + `","checkin":true,"managed":` + map[bool]string{true: "true", false: "false"}[managed] +
+			`,"applied_version":` + string(rune('0'+applied)) + `,"live":{"running":false},"settings":{"paths":["/old"]},"agent_version":"0.32"}`
+		rec := do(t, s, "POST", "/api/report", body, auth)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("check-in %s = %d %s", host, rec.Code, rec.Body)
+		}
+		var out struct {
+			Config *managedPush `json:"config"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out.Config
+	}
+
+	// A client that has not opted in gets nothing.
+	if p := checkin("frame", false, 0, frame); p != nil {
+		t.Fatal("settings pushed to a client with remote management off")
+	}
+	// Another client gets nothing either.
+	if p := checkin("vm", true, 0, func(r *http.Request) { r.SetBasicAuth("vm", "vm-login") }); p != nil {
+		t.Fatal("frame's settings pushed to vm")
+	}
+	p := checkin("frame", true, 0, frame)
+	if p == nil || p.Version != 1 || !strings.Contains(p.SettingsJSON, `"/home/me"`) {
+		t.Fatalf("push = %+v", p)
+	}
+	if !config.VerifyManaged("frame-repo-pw", "frame", p.Version, p.SettingsJSON, p.MAC) {
+		t.Fatal("push is not signed with the client's repository password")
+	}
+	// Tampering, another client's key, another host or an older version all fail.
+	if config.VerifyManaged("frame-repo-pw", "frame", p.Version, strings.Replace(p.SettingsJSON, "/home/me", "/etc", 1), p.MAC) ||
+		config.VerifyManaged("vm-repo-pw", "frame", p.Version, p.SettingsJSON, p.MAC) ||
+		config.VerifyManaged("frame-repo-pw", "vm", p.Version, p.SettingsJSON, p.MAC) ||
+		config.VerifyManaged("frame-repo-pw", "frame", p.Version+1, p.SettingsJSON, p.MAC) {
+		t.Fatal("signature accepted something it must not")
+	}
+	// Once applied, it is not sent again.
+	if p := checkin("frame", true, 1, frame); p != nil {
+		t.Fatal("already-applied settings pushed again")
+	}
+	// The dashboard sees the check-in.
+	rec := do(t, s, "GET", "/api/clients/config?host=frame", "", admin)
+	if !strings.Contains(rec.Body.String(), `"applied_version":1`) || !strings.Contains(rec.Body.String(), `"pending":false`) {
+		t.Fatalf("client config view = %s", rec.Body)
+	}
+}

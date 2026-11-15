@@ -481,6 +481,33 @@ Things to know:
   (`rest:http://name:secret@server:8000/name/`); it lives in the agent's 0600
   config file.
 
+**Managing clients from the server dashboard.** For headless machines: each
+client row has a **Manage** button that edits that client's paths, excludes,
+schedule and priority settings, and can ask it to back up now. It needs private
+repositories (above) and agent 0.32+, and it is off until you opt in on the
+client:
+
+```sh
+hoard-agent manage on        # then restart the agent if it runs as a service
+```
+
+How it works and what protects it:
+
+- Nothing connects in to a client. The agent checks in with the server (every
+  minute when it runs continuously, at the start of each run when a timer
+  starts it) using its own login, and the reply carries any new settings.
+- The server can set only what to back up, when, and how gently. It can never
+  change the repository, the password file or the server address, cannot start
+  a restore and cannot run commands.
+- Each settings push is signed with that client's repository password, which is
+  never sent over the network after enrollment, and carries a version number.
+  Someone who can read or alter traffic on your LAN cannot forge, change or
+  replay a push, even without TLS.
+- What remains: whoever controls the server or knows the dashboard password
+  can make a managed client back up any file its user can read, and the server
+  can read every repository. That is why it is opt-in per machine. "Back up
+  now" only reaches agents that run continuously.
+
 **Append-only.** Set `HOARD_REST_APPEND_ONLY=true` on the server container and
 rest-server runs with `--append-only`: clients can add backups, find and restore,
 but cannot delete or overwrite anything in the repo, so a mistake or compromise
