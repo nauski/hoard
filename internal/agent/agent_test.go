@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newAgent(t *testing.T) (*Agent, string) {
@@ -157,5 +158,66 @@ func TestBackupWithUnreadableFileIsOKWithWarnings(t *testing.T) {
 	}
 	if !strings.Contains(rr.Message, "1 files could not be read") {
 		t.Fatalf("message = %q", rr.Message)
+	}
+}
+
+// TestRestorePathBesideOriginal: a deleted directory and a deleted file each
+// come back from the newest snapshot that has them, into a side folder.
+func TestRestorePathBesideOriginal(t *testing.T) {
+	a, _ := newAgent(t)
+	src := t.TempDir()
+	wt := filepath.Join(src, "wt-perf")
+	if err := os.MkdirAll(filepath.Join(wt, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(src, "notes.txt")
+	for p, c := range map[string]string{filepath.Join(wt, "sub", "a.go"): "package a", file: "remember"} {
+		if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.cfg.Paths = []string{src}
+	ctx := context.Background()
+	if err := a.BackupPin(ctx, "before, cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := a.Snapshots(ctx)
+	if err != nil || len(snaps) == 0 {
+		t.Fatalf("snapshots: %v", err)
+	}
+	if got := strings.Join(snaps[0].Tags, "|"); got != "pin|note:before  cleanup" {
+		t.Fatalf("pin tags = %q", got)
+	}
+
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Backup(ctx); err != nil { // the deletion is now the newest snapshot
+		t.Fatal(err)
+	}
+
+	dest, err := a.RestorePath(ctx, wt, time.Time{}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(dest, wt+".restored-") {
+		t.Fatalf("dest = %s", dest)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "sub", "a.go")); err != nil || string(b) != "package a" {
+		t.Fatalf("directory not restored into %s: %v", dest, err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatal("restore touched the original location")
+	}
+
+	to := filepath.Join(t.TempDir(), "out")
+	if _, err := a.RestorePath(ctx, file, time.Time{}, to, false); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(to, "notes.txt")); err != nil || string(b) != "remember" {
+		t.Fatalf("file not restored into %s: %v", to, err)
 	}
 }

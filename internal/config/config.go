@@ -36,6 +36,9 @@ type Config struct {
 	// Alert is where failure/staleness notifications are sent.
 	Alert Alert `json:"alert"`
 
+	// Anomaly sets when a shrinking backup counts as a mass deletion.
+	Anomaly Anomaly `json:"anomaly"`
+
 	// StatePath is where run history is persisted across restarts.
 	StatePath string `json:"state_path"`
 
@@ -141,6 +144,26 @@ func (r Retention) Validate() error {
 	return nil
 }
 
+// Anomaly flags a backup whose file count fell sharply against the previous
+// snapshot of the same host (a bad rm -rf, a sync wiping a tree, an unmounted
+// disk). The previous snapshot is then held so retention cannot drop it.
+type Anomaly struct {
+	// Files triggers when at least this many files vanished (0 = off).
+	Files int `json:"files"`
+	// Percent triggers when at least this share of the files vanished (0 = off).
+	Percent int `json:"percent"`
+}
+
+// Triggered reports whether going from before to after files is an anomaly.
+// It compares net counts, so a rename of a large tree does not trigger.
+func (a Anomaly) Triggered(before, after int) bool {
+	drop := before - after
+	if drop <= 0 {
+		return false
+	}
+	return (a.Files > 0 && drop >= a.Files) || (a.Percent > 0 && drop*100 >= a.Percent*before)
+}
+
 // Alert configures outbound failure notifications via a generic webhook
 // (Discord/Slack/ntfy/etc. — anything that accepts a JSON POST).
 type Alert struct {
@@ -200,6 +223,7 @@ func Load(path string) (*Config, error) {
 		Schedule:   Schedule{StaleAfter: Duration(26 * time.Hour)},
 		Retention:  Retention{Daily: 7, Weekly: 4, Monthly: 6},
 		Alert:      Alert{OnFailure: true, FailureThreshold: 3},
+		Anomaly:    Anomaly{Files: 10000, Percent: 50},
 	}
 	if path != "" {
 		raw, err := os.ReadFile(path)

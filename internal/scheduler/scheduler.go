@@ -376,48 +376,148 @@ func (s *Scheduler) Check(ctx context.Context) {
 	s.log.Info("check ok")
 }
 
-// RefreshClients rebuilds per-host freshness from the hot repo's snapshots and
-// fires staleness alerts for hosts past the StaleAfter window.
+// RefreshClients rebuilds per-host freshness from the hot repo's snapshots,
+// fires staleness alerts for hosts past their stale window, and flags a host
+// whose newest backup lost a large share of its files (see checkAnomaly).
 func (s *Scheduler) RefreshClients(ctx context.Context) {
 	snaps, err := s.hotC().Snapshots(ctx)
 	if err != nil {
 		s.log.Warn("refresh clients: snapshots failed", "err", err)
 		return
 	}
-	latest := map[string]state.Client{}
+	// Newest and second-newest snapshot per host.
+	newest, second := map[string]restic.Snapshot{}, map[string]restic.Snapshot{}
 	for _, sn := range snaps {
-		c, ok := latest[sn.Hostname]
-		if !ok || sn.Time.After(c.LastSnapshot) {
-			var size uint64
-			if sn.Summary != nil {
-				size = sn.Summary.TotalBytesProcessed
+		switch n, ok := newest[sn.Hostname]; {
+		case !ok || sn.Time.After(n.Time):
+			if ok {
+				second[sn.Hostname] = n
 			}
-			latest[sn.Hostname] = state.Client{
-				Hostname:     sn.Hostname,
-				LastSnapshot: sn.Time,
-				SnapshotID:   sn.ShortID,
-				Paths:        sn.Paths,
-				Size:         size,
+			newest[sn.Hostname] = sn
+		default:
+			if p, ok := second[sn.Hostname]; !ok || sn.Time.After(p.Time) {
+				second[sn.Hostname] = sn
 			}
 		}
 	}
 
 	cfg := s.cfg.Load()
 	prev := s.store.Snapshot()
-	for host, c := range latest {
-		stale := cfg.Schedule.StaleFor(host)
-		c.HotOnly = cfg.Mirror.Excludes(host)
-		if stale > 0 && time.Since(c.LastSnapshot) > stale {
+	latest := map[string]state.Client{}
+	for host, sn := range newest {
+		var size uint64
+		if sn.Summary != nil {
+			size = sn.Summary.TotalBytesProcessed
+		}
+		c := state.Client{
+			Hostname:     host,
+			LastSnapshot: sn.Time,
+			SnapshotID:   sn.ShortID,
+			Paths:        sn.Paths,
+			Size:         size,
+			HotOnly:      cfg.Mirror.Excludes(host),
+			Anomaly:      prev.Clients[host].Anomaly,
+		}
+		if stale := cfg.Schedule.StaleFor(host); stale > 0 && time.Since(c.LastSnapshot) > stale {
 			c.Stale = true
 			// Only alert on the transition into staleness to avoid spamming.
-			if s.cfg.Load().Alert.OnStale && !prev.Clients[host].Stale {
+			if cfg.Alert.OnStale && !prev.Clients[host].Stale {
 				s.alert("client backup is stale",
 					host+" has not backed up since "+c.LastSnapshot.Format(time.RFC3339))
 			}
 		}
+		// Check each new snapshot once: only when the host was already known and
+		// its newest snapshot moved forward.
+		if p, known := prev.Clients[host]; known && p.SnapshotID != sn.ShortID && sn.Time.After(p.LastSnapshot) {
+			if before, ok := second[host]; ok {
+				if a := s.checkAnomaly(ctx, host, before, sn); a != nil {
+					c.Anomaly = a
+				}
+			}
+		}
+		if c.Anomaly != nil && !c.Anomaly.Held {
+			s.hold(ctx, c.Anomaly)
+		}
 		latest[host] = c
 	}
 	s.store.SetClients(latest)
+}
+
+// checkAnomaly compares a host's two newest snapshots and, when the file count
+// fell past the configured thresholds, alerts and returns the anomaly record.
+func (s *Scheduler) checkAnomaly(ctx context.Context, host string, before, after restic.Snapshot) *state.Anomaly {
+	an := s.cfg.Load().Anomaly
+	if an.Files <= 0 && an.Percent <= 0 {
+		return nil
+	}
+	fb, bb, fa, ba, err := s.snapshotCounts(ctx, before, after)
+	if err != nil {
+		// Never fail silently here: an unchecked backup is an unprotected one.
+		s.log.Warn("mass-deletion check skipped: cannot size snapshots", "host", host, "err", err)
+		return nil
+	}
+	if !an.Triggered(fb, fa) {
+		return nil
+	}
+	a := &state.Anomaly{
+		At: after.Time, PrevID: before.ShortID, NewID: after.ShortID,
+		FilesBefore: fb, FilesAfter: fa, BytesBefore: bb, BytesAfter: ba,
+	}
+	var lost uint64
+	if a.BytesBefore > a.BytesAfter {
+		lost = a.BytesBefore - a.BytesAfter
+	}
+	s.log.Warn("backup shrank sharply", "host", host, "files_before", fb, "files_after", fa)
+	s.alert("files vanished from a backup", fmt.Sprintf(
+		"%s: %d files / %s fewer than the previous backup (%d -> %d files). The previous snapshot %s is being held so retention cannot remove it; review and restore from it on the dashboard.",
+		host, fb-fa, humanBytes(lost), fb, fa, before.ShortID))
+	return a
+}
+
+// snapshotCounts returns the file count and logical size of two snapshots,
+// measured the same way for both. Clients on restic 0.17+ embed a summary in
+// each snapshot, which is free to read. Older clients (e.g. a distro-packaged
+// restic) do not, so the server walks both snapshots with its own restic.
+// That walk counts directories as well as files, which is why both snapshots
+// are always measured the same way.
+// ponytail: two tree walks per new snapshot for pre-0.17 clients; cache the
+// previous count in state if that shows up on a large host.
+func (s *Scheduler) snapshotCounts(ctx context.Context, before, after restic.Snapshot) (fb int, bb uint64, fa int, ba uint64, err error) {
+	if before.Summary != nil && after.Summary != nil {
+		return before.Summary.TotalFilesProcessed, before.Summary.TotalBytesProcessed,
+			after.Summary.TotalFilesProcessed, after.Summary.TotalBytesProcessed, nil
+	}
+	hot := s.hotC()
+	sb, err := hot.SnapshotStats(ctx, before.ID)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	sa, err := hot.SnapshotStats(ctx, after.ID)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return int(sb.TotalFileCount), sb.TotalSize, int(sa.TotalFileCount), sa.TotalSize, nil
+}
+
+// hold tags the anomaly's previous snapshot so retention keeps it. Tagging
+// needs an exclusive lock and rewrites the snapshot under a new ID; on failure
+// (e.g. a backup is running) Held stays false and the next refresh retries.
+func (s *Scheduler) hold(ctx context.Context, a *state.Anomaly) {
+	hot := s.hotC()
+	if err := hot.Tag(ctx, a.PrevID, []string{restic.TagHold}, nil); err != nil {
+		s.log.Warn("could not hold snapshot yet, will retry", "snapshot", a.PrevID, "err", err)
+		return
+	}
+	a.Held = true
+	snaps, err := hot.Snapshots(ctx)
+	if err != nil {
+		return
+	}
+	for _, sn := range snaps {
+		if strings.HasPrefix(sn.Original, a.PrevID) {
+			a.PrevID = sn.ShortID
+		}
+	}
 }
 
 // maybeSampleSize records a repo-size sample at most once per 24h. Hot is

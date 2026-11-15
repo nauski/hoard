@@ -86,13 +86,15 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 
 // Snapshot is a single restic snapshot (subset of fields we surface).
 type Snapshot struct {
-	ID       string           `json:"id"`
-	ShortID  string           `json:"short_id"`
-	Time     time.Time        `json:"time"`
-	Hostname string           `json:"hostname"`
-	Username string           `json:"username"`
-	Paths    []string         `json:"paths"`
-	Tags     []string         `json:"tags"`
+	ID       string    `json:"id"`
+	ShortID  string    `json:"short_id"`
+	Time     time.Time `json:"time"`
+	Hostname string    `json:"hostname"`
+	Username string    `json:"username"`
+	Paths    []string  `json:"paths"`
+	Tags     []string  `json:"tags"`
+	// Original is the ID this snapshot had before `restic tag` rewrote it.
+	Original string           `json:"original,omitempty"`
 	Summary  *SnapshotSummary `json:"summary,omitempty"`
 }
 
@@ -523,7 +525,31 @@ func forgetArgs(r config.Retention, host string) []string {
 	if len(keep) == 0 {
 		return nil
 	}
-	return append([]string{"forget", "--host", host, "--group-by", "host,paths"}, keep...)
+	args := []string{"forget", "--host", host, "--group-by", "host,paths", "--keep-tag", TagHold, "--keep-tag", TagPin}
+	return append(args, keep...)
+}
+
+// Snapshots carrying one of these tags survive every retention policy until a
+// person removes the tag: TagHold is set by the server on the last snapshot
+// before a mass deletion, TagPin by a user ("back up and pin").
+const (
+	TagHold = "hold"
+	TagPin  = "pin"
+)
+
+// Tag adds and/or removes tags on one snapshot. restic rewrites the snapshot,
+// so its ID changes; the new one records the old ID as Original. Takes an
+// exclusive repo lock, so it fails while a backup is running.
+func (c *Client) Tag(ctx context.Context, id string, add, remove []string) error {
+	args := []string{"tag"}
+	for _, t := range add {
+		args = append(args, "--add", t)
+	}
+	for _, t := range remove {
+		args = append(args, "--remove", t)
+	}
+	_, err := c.run(ctx, append(args, id)...)
+	return err
 }
 
 // ForgetPrune applies the retention policy host by host (r.Hosts overrides
@@ -607,6 +633,33 @@ func (c *Client) StatsMode(ctx context.Context, mode string) (*Stats, error) {
 		return nil, fmt.Errorf("parse stats: %w", err)
 	}
 	return &s, nil
+}
+
+// SnapshotStats walks one snapshot and returns its file count and logical
+// size. It works for snapshots made by any restic version, unlike the summary
+// embedded in the snapshot (0.17+ clients only), at the cost of a tree walk.
+func (c *Client) SnapshotStats(ctx context.Context, snapID string) (*Stats, error) {
+	out, err := c.run(ctx, "stats", "--json", "--no-lock", "--mode", "restore-size", snapID)
+	if err != nil {
+		return nil, err
+	}
+	var s Stats
+	if err := json.Unmarshal(out, &s); err != nil {
+		return nil, fmt.Errorf("parse stats: %w", err)
+	}
+	return &s, nil
+}
+
+// Version returns the major and minor version of the restic binary at bin.
+func Version(ctx context.Context, bin string) (major, minor int, err error) {
+	out, err := exec.CommandContext(ctx, bin, "version").Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("restic version: %w", err)
+	}
+	if _, err := fmt.Sscanf(string(out), "restic %d.%d", &major, &minor); err != nil {
+		return 0, 0, fmt.Errorf("cannot read restic version from %q", strings.TrimSpace(string(out)))
+	}
+	return major, minor, nil
 }
 
 // Stats returns repository size stats (raw-data mode, deduplicated stored size).

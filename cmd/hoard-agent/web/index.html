@@ -108,6 +108,7 @@
     <h2>Back up this machine<span class="help below" tabindex="0" data-tip="Run a backup now. restic auto-retries within a run; a fully-failed run stays failed until you retry here.">ⓘ</span></h2>
     <div class="bar">
       <button id="now" class="primary" onclick="backup()">Back up now</button>
+      <button id="pinNow" class="secondary" onclick="backupPin()" title="Back up now and keep that snapshot past retention, until it is unpinned on the server. Use before a risky cleanup.">Back up and pin…</button>
       <span id="msg" class="msg sub"></span>
     </div>
   </div>
@@ -143,6 +144,11 @@
   <section class="tab" id="tab-browse">
   <div class="card">
     <h2>Browse &amp; manage your backups<span class="help below" tabindex="0" data-tip="Browse past versions; restore or download files, or delete a version.">ⓘ</span></h2>
+    <div class="bar" style="margin-bottom:8px">
+      <input id="bFind" type="text" placeholder="find by file name: wt-perf, *.jsonl" style="flex:1" onkeydown="if(event.key==='Enter')findInBackups()">
+      <button class="secondary" onclick="findInBackups()">Find</button>
+    </div>
+    <div id="bFound" style="margin-bottom:8px"></div>
     <div id="bVersions"><div class="sub">loading versions…</div></div>
     <div id="bFiles" style="margin-top:12px"></div>
   </div>
@@ -383,10 +389,15 @@ async function save(){
   $("#smsg").textContent = r.ok ? "saved ✓" : err;
   setTimeout(()=>$("#smsg").textContent="",2500);
 }
-async function backup(){
+async function backupPin(){
+  const note=prompt("Pin this backup so retention keeps it.\nNote (e.g. before worktree cleanup):","");
+  if(note===null) return;
+  await backup(note.trim()||"pinned");
+}
+async function backup(pin){
   await save();
   $("#msg").textContent="starting backup…";
-  const r=await fetch("/api/backup",{method:"POST"});
+  const r=await fetch("/api/backup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(typeof pin==="string"?{pin}:{})});
   const j=await r.json();
   $("#msg").textContent = r.ok ? "backup started" : ("error: "+(j.error||r.status));
   setTimeout(refresh,600);
@@ -447,7 +458,7 @@ async function refresh(){
     const run=$("#run");
     if(running){ run.textContent=live.paused?"paused":((live.kind==="restore")?"restoring…":"backing up…"); run.className="badge b-run"; }
     else { run.textContent="idle"; run.className="badge b-idle"; }
-    $("#now").disabled=running;
+    $("#now").disabled=running; $("#pinNow").disabled=running;
     renderLive(live);
     $("#next").textContent = st.next_run ? "next run "+fmt(st.next_run) : "";
     const lr=st.last_run;
@@ -491,6 +502,39 @@ let versionsLoaded=false;
 // short_ids optimistically deleted — filtered out of every reload until the
 // server confirms they're gone, so no refresh can resurrect a row.
 let pendingDel=new Set();
+// Search backups by file name and show, per match, the newest version that
+// has it and when it went missing.
+function foundRows(list, action){
+  if(!list.length) return '<div class="sub">no match in any backup</div>';
+  return list.map((f,i)=>{
+    const gone=f.gone_time?'<span class="badge b-bad">missing since '+fmt(f.gone_time)+'</span>':'<span class="badge b-ok">still present</span>';
+    return '<div class="vrow"><span class="nm"><span class="mono">'+esc(f.path)+'</span> '+gone
+      +'<br><span class="sub">'+esc(f.type)+' · in '+f.versions+' backup(s) · last in '+esc(f.last_id)+' ('+fmt(f.last_time)+')</span></span>'
+      +action(f,i)+'</div>';
+  }).join("")+(list.length>=200?'<div class="sub">showing the first 200 matches; narrow the pattern</div>':'');
+}
+let bFoundList=[];
+async function findInBackups(){
+  const q=$("#bFind").value.trim(), el=$("#bFound");
+  if(!q){ el.innerHTML=""; return; }
+  el.innerHTML='<div class="sub">searching every version (can take minutes on a large backup)…</div>';
+  try{
+    const r=await fetch("/api/find?q="+encodeURIComponent(q));
+    const j=await r.json();
+    if(!r.ok){ el.innerHTML='<div class="sub">error: '+esc(j.error||String(r.status))+'</div>'; return; }
+    bFoundList=j||[];
+    el.innerHTML=foundRows(bFoundList,(f,i)=>'<button class="mini act" onclick="restoreFound('+i+')">Restore beside original</button>');
+  }catch(e){ el.innerHTML='<div class="sub">search failed</div>'; }
+}
+// Restore the newest version of a found path into <path>.restored-<time>,
+// never over the original.
+async function restoreFound(i){
+  const f=bFoundList[i]; if(!f) return;
+  const r=await fetch("/api/restore-path",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:f.path})});
+  const j=await r.json();
+  $("#bFound").insertAdjacentHTML("afterbegin",'<div class="sub">'+(r.ok?"restoring "+esc(f.path)+" into "+esc(f.path)+".restored-… (progress above)":"error: "+esc(j.error||String(r.status)))+'</div>');
+  setTimeout(refresh,600);
+}
 async function loadVersions(){
   if(running) return; // don't spawn restic against the busy rest-server mid-backup
   let sn;

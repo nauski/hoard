@@ -70,3 +70,27 @@ func TestStaleForAndMirrorExcludes(t *testing.T) {
 		t.Fatal("Mirror.Excludes wrong")
 	}
 }
+
+func TestAnomalyTriggered(t *testing.T) {
+	a := Anomaly{Files: 10000, Percent: 50}
+	cases := []struct {
+		before, after int
+		want          bool
+	}{
+		{1_100_000, 1_052_000, true},  // 48k files gone: over the file threshold
+		{1_100_000, 1_095_000, false}, // 5k gone: under both
+		{2000, 900, true},             // small host, more than half gone
+		{2000, 1500, false},
+		{2000, 0, true}, // unmounted disk
+		{1000, 50_000, false},
+		{0, 0, false},
+	}
+	for _, c := range cases {
+		if got := a.Triggered(c.before, c.after); got != c.want {
+			t.Errorf("Triggered(%d,%d) = %v, want %v", c.before, c.after, got, c.want)
+		}
+	}
+	if (Anomaly{}).Triggered(1000, 0) {
+		t.Error("zero-value Anomaly must be off")
+	}
+}

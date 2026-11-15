@@ -55,7 +55,23 @@ type Client struct {
 	Paths        []string  `json:"paths"`
 	Stale        bool      `json:"stale"`
 	HotOnly      bool      `json:"hot_only,omitempty"` // excluded from the offsite mirror
-	Size         uint64    `json:"size"`               // latest snapshot's logical size
+	// Anomaly is set when the latest backup lost a large share of its files; it
+	// stays until dismissed on the dashboard.
+	Anomaly *Anomaly `json:"anomaly,omitempty"`
+	Size    uint64   `json:"size"` // latest snapshot's logical size
+}
+
+// Anomaly records a suspected mass deletion between two snapshots of a host.
+type Anomaly struct {
+	At          time.Time `json:"at"`
+	PrevID      string    `json:"prev_id"` // last snapshot before the drop (the one to restore from)
+	NewID       string    `json:"new_id"`
+	FilesBefore int       `json:"files_before"`
+	FilesAfter  int       `json:"files_after"`
+	BytesBefore uint64    `json:"bytes_before"`
+	BytesAfter  uint64    `json:"bytes_after"`
+	// Held is true once PrevID carries the hold tag (retention cannot drop it).
+	Held bool `json:"held"`
 }
 
 // Store is the persisted, concurrency-safe application state.
@@ -116,6 +132,17 @@ func (s *Store) SetClients(clients map[string]Client) {
 	defer s.mu.Unlock()
 	s.Clients = clients
 	s.save()
+}
+
+// ClearAnomaly dismisses host's anomaly and persists.
+func (s *Store) ClearAnomaly(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.Clients[host]; ok {
+		c.Anomaly = nil
+		s.Clients[host] = c
+		s.save()
+	}
 }
 
 // SetOutcome records a client's latest run outcome and persists.

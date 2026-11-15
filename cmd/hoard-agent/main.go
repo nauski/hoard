@@ -8,8 +8,10 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nauski/hoard/internal/agent"
+	"github.com/nauski/hoard/internal/restic"
 )
 
 //go:embed all:web
@@ -46,6 +49,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A distro-packaged restic can be far behind. Backups work on old versions,
+	// but restores do not, and that must not be discovered on the day of a restore.
+	if maj, min, err := restic.Version(context.Background(), *resticBin); err != nil {
+		log.Warn("cannot determine restic version", "err", err)
+	} else if maj == 0 && min < 17 {
+		log.Warn("restic is older than 0.17: backups work, but restore from this agent needs 0.17 or newer; install a current restic (e.g. `restic self-update` or the release binary) and point -restic at it",
+			"version", fmt.Sprintf("%d.%d", maj, min))
+	}
+
 	if *enrollTok != "" {
 		if *enrollSrv == "" {
 			log.Error("-enroll requires -enroll-server")
@@ -59,17 +71,18 @@ func main() {
 		os.Exit(0)
 	}
 
-	// One-shot mode: flags come first because the flag package stops parsing
-	// at the first non-flag argument.
+	// One-shot subcommands. Global flags come first because the flag package
+	// stops parsing at the first non-flag argument.
 	if flag.NArg() > 0 {
-		if flag.NArg() != 1 || flag.Arg(0) != "backup" {
-			fmt.Fprintln(os.Stderr, "usage: hoard-agent [flags] [backup]")
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err := runCommand(ctx, a, flag.Args())
+		stop()
+		if errors.Is(err, errUsage) {
+			fmt.Fprint(os.Stderr, usage)
 			os.Exit(2)
 		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		err := a.Backup(ctx) // logs its own outcome; reports to the server like the daemon
-		stop()
 		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -104,6 +117,86 @@ func main() {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutCtx)
+}
+
+const usage = `usage: hoard-agent [flags]                       run the GUI and scheduler
+       hoard-agent [flags] backup [-pin NOTE]    back up once and exit; -pin keeps the snapshot past retention
+       hoard-agent [flags] find PATTERN          search this host's backups by file name ("wt-perf", "*.jsonl")
+       hoard-agent [flags] restore -path PATH [-before TIME] [-to DIR] [-inplace]
+                                                 restore PATH from the newest backup that has it
+                                                 (default destination: PATH.restored-<timestamp>)
+`
+
+var errUsage = errors.New("usage")
+
+// runCommand executes one subcommand with the saved agent config.
+func runCommand(ctx context.Context, a *agent.Agent, args []string) error {
+	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	switch args[0] {
+	case "backup":
+		pin := fs.String("pin", "", "")
+		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 {
+			return errUsage
+		}
+		return a.BackupPin(ctx, *pin) // logs its own outcome; reports to the server like the daemon
+	case "find":
+		if fs.Parse(args[1:]) != nil || fs.NArg() != 1 {
+			return errUsage
+		}
+		found, err := a.Find(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		if len(found) == 0 {
+			fmt.Println("no match in any backup")
+		}
+		const stamp = "2006-01-02 15:04"
+		for _, f := range found {
+			state := "still present"
+			if f.GoneTime != nil {
+				state = "MISSING since " + f.GoneTime.Local().Format(stamp)
+			}
+			fmt.Printf("%s\n    %s, in %d backups, last in %s (%s), %s\n",
+				f.Path, f.Type, f.Versions, f.LastID, f.LastTime.Local().Format(stamp), state)
+		}
+		return nil
+	case "restore":
+		p := fs.String("path", "", "")
+		beforeS := fs.String("before", "", "")
+		to := fs.String("to", "", "")
+		inplace := fs.Bool("inplace", false, "")
+		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 || *p == "" {
+			return errUsage
+		}
+		var before time.Time
+		if *beforeS != "" {
+			var err error
+			if before, err = parseWhen(*beforeS); err != nil {
+				return err
+			}
+		}
+		dest, err := a.RestorePath(ctx, *p, before, *to, *inplace)
+		if err != nil {
+			return err
+		}
+		fmt.Println("restored to", dest)
+		return nil
+	}
+	return errUsage
+}
+
+// parseWhen accepts RFC 3339 or local "2006-01-02 15:04" / "2006-01-02".
+func parseWhen(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot read time %q: use 2026-11-15 14:00, 2026-11-15, or RFC 3339", s)
 }
 
 // defaultConfigPath honors XDG_CONFIG_HOME, falling back to ~/.config.

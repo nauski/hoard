@@ -516,7 +516,12 @@ func (a *Agent) resticClient() (*restic.Client, error) {
 
 // Backup runs one backup now. It is safe to call concurrently; a second call
 // while one is running returns an error.
-func (a *Agent) Backup(ctx context.Context) error {
+func (a *Agent) Backup(ctx context.Context) error { return a.BackupPin(ctx, "") }
+
+// BackupPin runs one backup and, when note is non-empty, pins the snapshot:
+// it is tagged so the server's retention keeps it until someone unpins it
+// there. Use before a risky operation ("before worktree cleanup").
+func (a *Agent) BackupPin(ctx context.Context, note string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	a.mu.Lock()
 	if a.running {
@@ -584,7 +589,11 @@ func (a *Agent) Backup(ctx context.Context) error {
 			a.mu.Unlock()
 		},
 	}
-	summary, out, err := cl.Backup(runCtx, cfg.Paths, cfg.Excludes, cfg.Host, cfg.Tags, hooks)
+	tags := cfg.Tags
+	if note = trimSpace(strings.ReplaceAll(note, ",", " ")); note != "" { // restic splits tags on commas
+		tags = append(append([]string(nil), tags...), restic.TagPin, "note:"+note)
+	}
+	summary, out, err := cl.Backup(runCtx, cfg.Paths, cfg.Excludes, cfg.Host, tags, hooks)
 	rr.EndedAt = time.Now()
 	rr.Output = out
 	rr.Summary = summary
@@ -706,6 +715,49 @@ func (a *Agent) Restore(ctx context.Context, snapID, subpath, target, mode strin
 	}
 	a.storeRun(rr)
 	return nil
+}
+
+// Find searches this host's snapshots for pattern (a file-name glob such as
+// "wt-perf" or "*.jsonl") and returns each match's history.
+func (a *Agent) Find(ctx context.Context, pattern string) ([]restic.Found, error) {
+	cl, err := a.resticClient()
+	if err != nil {
+		return nil, err
+	}
+	return cl.FindTimeline(ctx, a.GetConfig().Host, pattern)
+}
+
+// RestorePath brings back one file or directory from the newest snapshot that
+// contains it (taken before `before`, if set). By default it restores beside
+// the original, into "<path>.restored-<timestamp>" (or `to`): a directory's
+// contents go straight into that folder, a file goes inside it. inplace
+// restores over the original location instead. It returns where the data went.
+func (a *Agent) RestorePath(ctx context.Context, p string, before time.Time, to string, inplace bool) (string, error) {
+	p = filepath.Clean(p)
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("path must be absolute: %s", p)
+	}
+	cl, err := a.resticClient()
+	if err != nil {
+		return "", err
+	}
+	snap, typ, err := cl.LastContaining(ctx, a.GetConfig().Host, p, before)
+	if err != nil {
+		return "", err
+	}
+	a.log.Info("restoring", "path", p, "snapshot", snap.ShortID, "taken", snap.Time.Format(time.RFC3339))
+	if inplace {
+		return p, a.Restore(ctx, snap.ID, p, "", "inplace")
+	}
+	if to == "" {
+		to = p + ".restored-" + time.Now().Format("20060102-150405")
+	}
+	// "<id>:<dir>" makes restic treat dir as the root, so the data lands
+	// directly in `to` instead of under to/home/user/....
+	if typ == "dir" {
+		return to, a.Restore(ctx, snap.ID+":"+p, "", to, "")
+	}
+	return to, a.Restore(ctx, snap.ID+":"+filepath.Dir(p), "/"+filepath.Base(p), to, "")
 }
 
 // Snapshots lists this host's snapshots on the server.

@@ -75,9 +75,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/forecast", s.handleForecast)
 	mux.HandleFunc("GET /api/ls", s.handleLs)
 	mux.HandleFunc("GET /api/diff", s.handleDiff)
+	mux.HandleFunc("GET /api/find", s.handleFind)
 	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("POST /api/purge", s.handlePurge)
 	mux.HandleFunc("POST /api/delete-version", s.handleDeleteVersion)
+	mux.HandleFunc("POST /api/untag", s.handleUntag)
+	mux.HandleFunc("POST /api/anomaly/dismiss", s.handleAnomalyDismiss)
 	mux.HandleFunc("POST /api/restore", s.handleRestore)
 	// Live running-backup aggregation across all clients.
 	mux.HandleFunc("POST /api/report", s.handleReport)
@@ -323,6 +326,60 @@ func (s *Server) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "id": req.ID})
+}
+
+// handleFind searches one host's hot-repo snapshots for a file-name pattern and
+// returns each match's history (last version that has it, when it vanished).
+// Read-only; walks every snapshot, so it can take minutes on a large repo.
+func (s *Server) handleFind(w http.ResponseWriter, r *http.Request) {
+	host, q := r.URL.Query().Get("host"), r.URL.Query().Get("q")
+	if host == "" || q == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing host or q"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	found, err := s.hot().FindTimeline(ctx, host, q)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, found)
+}
+
+// handleUntag removes the pin or hold tag from a hot-repo snapshot, handing it
+// back to normal retention. The snapshot gets a new ID (restic rewrites it).
+func (s *Server) handleUntag(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID  string `json:"id"`
+		Tag string `json:"tag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" ||
+		(req.Tag != restic.TagPin && req.Tag != restic.TagHold) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "need a snapshot id and tag pin or hold"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	if err := s.hot().Tag(ctx, req.ID, nil, []string{req.Tag}); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAnomalyDismiss clears a client's mass-deletion flag. The held snapshot
+// stays held until its hold tag is removed in the browser.
+func (s *Server) handleAnomalyDismiss(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host string `json:"host"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Host == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing host"})
+		return
+	}
+	s.store.ClearAnomaly(req.Host)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

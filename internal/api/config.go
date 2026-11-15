@@ -37,6 +37,7 @@ type configResponse struct {
 	Retention      config.Retention `json:"retention"`
 	Mirror         config.Mirror    `json:"mirror"`
 	Alert          config.Alert     `json:"alert"`
+	Anomaly        config.Anomaly   `json:"anomaly"`
 	HotRepo        string           `json:"hot_repo"`
 	HotPasswordSet bool             `json:"hot_password_set"`
 	Cold           coldView         `json:"cold"`
@@ -50,6 +51,7 @@ func (s *Server) configView() configResponse {
 		Schedule:       c.Schedule,
 		Retention:      c.Retention,
 		Mirror:         c.Mirror,
+		Anomaly:        c.Anomaly,
 		Alert:          c.Alert,
 		HotRepo:        c.Hot.Repository,
 		HotPasswordSet: c.Hot.Password != "",
@@ -83,6 +85,7 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		Schedule  *config.Schedule  `json:"schedule"`
 		Retention *config.Retention `json:"retention"`
 		Mirror    *config.Mirror    `json:"mirror"`
+		Anomaly   *config.Anomaly   `json:"anomaly"`
 		Alert     *config.Alert     `json:"alert"`
 		Cold      *struct {
 			Repository         *string `json:"repository"`
@@ -109,6 +112,9 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	err := s.cfg.Update(func(c *config.Config) {
 		if req.Mirror != nil {
 			c.Mirror = *req.Mirror
+		}
+		if req.Anomaly != nil {
+			c.Anomaly = *req.Anomaly
 		}
 		if req.Schedule != nil {
 			c.Schedule = *req.Schedule

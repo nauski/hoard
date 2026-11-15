@@ -259,6 +259,25 @@ systemctl --user enable --now hoard-agent-backup.timer
 sudo loginctl enable-linger "$USER"
 ```
 
+Also from the shell, using the same saved config:
+
+```sh
+hoard-agent backup -pin "before worktree cleanup"   # keep this snapshot past retention
+hoard-agent find wt-perf                            # which backups have it, when it vanished
+hoard-agent restore -path ~/non-work/wt-perf        # newest backup that has it -> wt-perf.restored-<time>
+hoard-agent restore -path ~/notes.md -before "2026-11-14 14:00" -to /tmp/out
+```
+
+`find` matches file names (`wt-perf`, `*.jsonl`) across every backup of this
+host, so it can take minutes on a large home. `restore` never writes over the
+original unless you pass `-inplace`.
+
+**restic version on the client.** Backups work with an old distro-packaged
+restic, but restoring from the agent needs restic 0.17 or newer (the agent warns
+at start if it is older). The mass-deletion alert does not depend on the client's
+version: when a snapshot lacks the size summary that 0.17+ clients embed, the
+server measures it with its own restic.
+
 `hoard-agent backup` exits 0 when a snapshot was saved, including when some
 files could not be read because they were changing (restic exit code 3; the
 count is in the log line and the files are listed in the GUI), and 1 on failure.
@@ -299,6 +318,13 @@ All fields are in `config.example.json`. Highlights:
   removes them.
 - `cold.limit_upload_kibps` / `limit_download_kibps` — transfer caps in KiB/s for
   the offsite mirror (`0` = unlimited); each agent has the same knobs for its push.
+- `anomaly.files` / `anomaly.percent` — mass-deletion alert (defaults `10000` /
+  `50`, `0` = off). When a host's newest backup has that many fewer files than the
+  one before it (or that share of them), hoard alerts, flags the client on the
+  dashboard, and tags the previous snapshot `hold`. Snapshots tagged `hold` or
+  `pin` (from "Back up and pin" / `hoard-agent backup -pin`) are kept by every
+  retention policy until released in the browser. Tagging gives a snapshot a new
+  ID, so a held snapshot of a mirrored host is copied offsite once more.
 - `alert.webhook_url` — a JSON POST target. The payload carries `title`, `content`,
   and `text` keys, covering ntfy, Discord-compatible relays, and most others.
 - `alert.on_failure` / `alert.failure_threshold` — also alert when a client's
@@ -322,6 +348,9 @@ is set, never the value.
 | `GET /api/stats` | Repo sizes — logical vs stored (dedup/compression savings). |
 | `GET /api/forecast` | Projected repo-size growth from recorded samples. |
 | `GET /api/snapshots` | Live `restic snapshots` from the hot repo. |
+| `GET /api/find?host=&q=` | Search one host's backups by file name; per match, the last version that has it and when it vanished. |
+| `POST /api/untag` | Remove the `pin` or `hold` tag from a snapshot (`{id, tag}`). |
+| `POST /api/anomaly/dismiss` | Clear a client's mass-deletion flag (`{host}`). |
 | `GET /api/history` | Recent job results (mirror/check/prune/purge/…). |
 | `GET /api/ls?id=&path=` | List one directory level inside a snapshot. |
 | `GET /api/diff?id=&parent=` | What changed between a version and the previous. |

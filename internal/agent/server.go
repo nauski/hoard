@@ -33,6 +33,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/mkdir", s.mkdir)
 	mux.HandleFunc("POST /api/backup", s.backup)
 	mux.HandleFunc("POST /api/restore", s.restore)
+	mux.HandleFunc("GET /api/find", s.find)
+	mux.HandleFunc("POST /api/restore-path", s.restorePath)
 	mux.HandleFunc("POST /api/backup/pause", s.control("pause"))
 	mux.HandleFunc("POST /api/backup/resume", s.control("resume"))
 	mux.HandleFunc("POST /api/backup/cancel", s.control("cancel"))
@@ -161,8 +163,13 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "a backup is already running"})
 		return
 	}
+	// Optional body {"pin":"note"} pins the snapshot (see Agent.BackupPin).
+	var req struct {
+		Pin string `json:"pin"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
 	go func() {
-		if err := s.agent.Backup(context.Background()); err != nil {
+		if err := s.agent.BackupPin(context.Background(), req.Pin); err != nil {
 			s.log.Error("manual backup failed", "err", err)
 		}
 	}()
@@ -191,6 +198,45 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		if err := s.agent.Restore(context.Background(), req.ID, req.Path, req.Target, req.Mode); err != nil {
+			s.log.Error("restore failed", "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+// find searches this host's snapshots for a file-name pattern.
+func (s *Server) find(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing q"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	found, err := s.agent.Find(ctx, q)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, found)
+}
+
+// restorePath restores one path from the newest snapshot that has it, beside
+// the original (never in place).
+func (s *Server) restorePath(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path"})
+		return
+	}
+	if _, running := s.agent.LastRun(); running {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a backup or restore is already running"})
+		return
+	}
+	go func() {
+		if _, err := s.agent.RestorePath(context.Background(), req.Path, time.Time{}, "", false); err != nil {
 			s.log.Error("restore failed", "err", err)
 		}
 	}()
