@@ -61,7 +61,7 @@ func main() {
 	if maj, min, err := restic.Version(context.Background(), *resticBin); err != nil {
 		log.Warn("cannot determine restic version", "err", err)
 	} else if maj == 0 && min < 17 {
-		log.Warn("restic is older than 0.17: backups work, but restore from this agent needs 0.17 or newer; install a current restic (e.g. `restic self-update` or the release binary) and point -restic at it",
+		log.Warn("restic is older than 0.17: backups work, but restore from this agent needs 0.17 or newer; install a current restic (the release binary from github.com/restic/restic; distro packages are often old) and point -restic at it",
 			"version", fmt.Sprintf("%d.%d", maj, min))
 	}
 

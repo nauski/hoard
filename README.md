@@ -451,6 +451,36 @@ reverse proxy with auth and give rest-server a `.htpasswd`
 (`HOARD_REST_OPTS=""` + a mounted credentials file, then
 `rest:http://user:pass@server:8000/hot`).
 
+**Dashboard password.** Set one in Settings (or seed it with
+`HOARD_DASHBOARD_PASSWORD`). The dashboard and its whole API then need HTTP
+Basic auth with that password (any user name): browsing, downloads, deletes,
+settings and the recovery kit. Three routes stay outside it because clients
+call them: `/healthz`, enrollment redemption (single-use token) and progress
+reports (per-client login in private mode). With a password set, an agent's
+"delete from server" actions are refused; do those on the dashboard. There is
+no rate limit, so use a long password, and it travels unencrypted on your LAN
+unless you put TLS in front. To remove it, delete `dashboard_password` from the
+config file and restart.
+
+**Private repositories (per-client credentials).** Set `HOARD_REST_PRIVATE=true`
+on the server container. Each client that enrolls then gets its own repository
+(`<data>/repos/<name>`), its own repository password and its own rest-server
+login, and rest-server refuses it access to any other client's path. A
+compromised client can therefore read and write only its own backups. The
+server keeps every client's password in its config (and in the recovery kit).
+Things to know:
+
+- Clients enrolled before the switch still point at the shared repo, which
+  rest-server no longer serves: enroll each again with a new token
+  (`hoard-agent -enroll …`, agent 0.29+). The dashboard marks them
+  "shared repo: re-enroll". Their old backups stay browsable on the dashboard.
+- Each new repository starts empty, so the first backup after re-enrolling
+  uploads everything again, and identical files on two machines are stored
+  once per machine on the NAS. They still deduplicate in the offsite repo.
+- The client's repository URL contains its login
+  (`rest:http://name:secret@server:8000/name/`); it lives in the agent's 0600
+  config file.
+
 **Append-only.** Set `HOARD_REST_APPEND_ONLY=true` on the server container and
 rest-server runs with `--append-only`: clients can add backups, find and restore,
 but cannot delete or overwrite anything in the repo, so a mistake or compromise

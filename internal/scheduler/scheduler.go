@@ -14,6 +14,7 @@ import (
 
 	"github.com/nauski/hoard/internal/config"
 	"github.com/nauski/hoard/internal/forecast"
+	"github.com/nauski/hoard/internal/hot"
 	"github.com/nauski/hoard/internal/restic"
 	"github.com/nauski/hoard/internal/state"
 )
@@ -35,6 +36,7 @@ type Scheduler struct {
 	store     *state.Store
 	log       *slog.Logger
 	note      Notifier
+	hot       *hot.Set
 
 	mu      sync.Mutex // serializes restic operations; only one runs at a time
 	running string     // name of the currently running job, "" if idle
@@ -139,8 +141,13 @@ func (s *Scheduler) CancelServerJob() bool {
 }
 
 func New(cfg *config.Store, resticBin string, store *state.Store, log *slog.Logger) *Scheduler {
-	return &Scheduler{cfg: cfg, resticBin: resticBin, store: store, log: log}
+	return &Scheduler{cfg: cfg, resticBin: resticBin, store: store, log: log,
+		hot: hot.New(resticBin, cfg, lockWait, log)}
 }
+
+// Hot returns the hot storage (shared repo plus per-client repos), so the API
+// resolves hosts and snapshots through the same lookup tables.
+func (s *Scheduler) Hot() *hot.Set { return s.hot }
 
 // lockWait is how long server-side restic commands wait for a repository lock
 // held by a client backup before giving up.
@@ -149,9 +156,6 @@ const lockWait = "10m"
 // hotC / coldC build a restic client from the CURRENT config, so changing the
 // repo/endpoint/credentials in Settings takes effect on the next operation
 // without a restart. restic.New just captures strings, so this is cheap.
-func (s *Scheduler) hotC() *restic.Client {
-	return restic.New(s.resticBin, s.cfg.Load().Hot).WithRetryLock(lockWait)
-}
 func (s *Scheduler) coldC() *restic.Client {
 	return restic.New(s.resticBin, s.cfg.Load().Cold).WithRetryLock(lockWait)
 }
@@ -233,42 +237,64 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	// Clear locks left behind by a crashed backup or job. `restic unlock` only
 	// removes stale locks (owner process gone, or not refreshed for 30 minutes),
 	// so a backup that is running right now keeps its lock.
-	if err := s.hotC().Unlock(jctx); err != nil {
-		s.log.Warn("unlock hot repo", "err", err)
-	}
 	cfg := s.cfg.Load()
+	keys := s.hot.Keys()
+	for _, k := range keys {
+		if err := s.hot.Repo(k).Unlock(jctx); err != nil {
+			s.log.Warn("unlock", "repo", hot.Label(k), "err", err)
+		}
+	}
 	if cfg.Retention.ApplyToHot {
-		if !s.prune(jctx, s.hotC(), "prune-hot", "the hot repo") {
-			return // cancelled
+		for _, k := range keys {
+			if !s.prune(jctx, s.hot.Repo(k), "prune-hot", hot.Label(k)) {
+				return // cancelled
+			}
 		}
 		s.phaseJob("mirror")
 	}
 
 	start := time.Now()
-	// With hot-only hosts configured, copy the remaining hosts by name. If the
-	// host list cannot be read, fail rather than fall back to copying everything:
-	// a hot-only host must never reach the offsite repo by accident.
-	var hosts []string
-	var out string
+	// Copy each hot repository into the offsite repo. With hot-only hosts
+	// configured, the remaining hosts are copied by name; if a host list cannot
+	// be read, fail rather than fall back to copying everything: a hot-only
+	// host must never reach the offsite repo by accident.
+	var outB strings.Builder
 	var err error
-	if len(cfg.Mirror.ExcludeHosts) > 0 {
-		var all []string
-		all, err = s.hotC().Hostnames(jctx)
-		for _, h := range all {
-			if !cfg.Mirror.Excludes(h) {
-				hosts = append(hosts, h)
+	copied := 0
+	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
+	for _, k := range keys {
+		if k != hot.Shared && cfg.Mirror.Excludes(k) {
+			continue
+		}
+		var hosts []string
+		if len(cfg.Mirror.ExcludeHosts) > 0 {
+			var all []string
+			if all, err = s.hot.Repo(k).Hostnames(jctx); err != nil {
+				break
+			}
+			for _, h := range all {
+				if !cfg.Mirror.Excludes(h) {
+					hosts = append(hosts, h)
+				}
+			}
+			if len(hosts) == 0 {
+				continue
 			}
 		}
-		if err == nil && len(hosts) == 0 {
-			s.store.RecordJob(state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), OK: true,
-				Message: "nothing to mirror: every host is hot-only"})
-			return
+		var o string
+		o, err = s.coldC().CopyFrom(jctx, s.hot.RepoConfig(k), hosts, hooks)
+		outB.WriteString(o)
+		copied++
+		if err != nil {
+			break
 		}
 	}
-	if err == nil {
-		hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
-		out, err = s.coldC().CopyFrom(jctx, cfg.Hot, hosts, hooks)
+	if err == nil && copied == 0 {
+		s.store.RecordJob(state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), OK: true,
+			Message: "nothing to mirror: every host is hot-only"})
+		return
 	}
+	out := outB.String()
 	res := state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		if jctx.Err() == context.Canceled {
@@ -397,7 +423,7 @@ func (s *Scheduler) Check(ctx context.Context) {
 // fires staleness alerts for hosts past their stale window, and flags a host
 // whose newest backup lost a large share of its files (see checkAnomaly).
 func (s *Scheduler) RefreshClients(ctx context.Context) {
-	snaps, err := s.hotC().Snapshots(ctx)
+	snaps, err := s.hot.Snapshots(ctx)
 	if err != nil {
 		s.log.Warn("refresh clients: snapshots failed", "err", err)
 		return
@@ -433,6 +459,7 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 			Paths:        sn.Paths,
 			Size:         size,
 			HotOnly:      cfg.Mirror.Excludes(host),
+			OwnRepo:      s.hot.KeyForHost(ctx, host) != hot.Shared,
 			Anomaly:      prev.Clients[host].Anomaly,
 		}
 		if stale := cfg.Schedule.StaleFor(host); stale > 0 && time.Since(c.LastSnapshot) > stale {
@@ -504,12 +531,15 @@ func (s *Scheduler) snapshotCounts(ctx context.Context, before, after restic.Sna
 		return before.Summary.TotalFilesProcessed, before.Summary.TotalBytesProcessed,
 			after.Summary.TotalFilesProcessed, after.Summary.TotalBytesProcessed, nil
 	}
-	hot := s.hotC()
-	sb, err := hot.SnapshotStats(ctx, before.ID)
+	repo, err := s.hot.ForSnapshot(ctx, before.ID)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
-	sa, err := hot.SnapshotStats(ctx, after.ID)
+	sb, err := repo.SnapshotStats(ctx, before.ID)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	sa, err := repo.SnapshotStats(ctx, after.ID)
 	if err != nil {
 		return 0, 0, 0, 0, err
 	}
@@ -520,13 +550,17 @@ func (s *Scheduler) snapshotCounts(ctx context.Context, before, after restic.Sna
 // needs an exclusive lock and rewrites the snapshot under a new ID; on failure
 // (e.g. a backup is running) Held stays false and the next refresh retries.
 func (s *Scheduler) hold(ctx context.Context, a *state.Anomaly) {
-	hot := s.hotC()
-	if err := hot.Tag(ctx, a.PrevID, []string{restic.TagHold}, nil); err != nil {
+	repo, err := s.hot.ForSnapshot(ctx, a.PrevID)
+	if err != nil {
+		s.log.Warn("could not hold snapshot yet, will retry", "snapshot", a.PrevID, "err", err)
+		return
+	}
+	if err := repo.Tag(ctx, a.PrevID, []string{restic.TagHold}, nil); err != nil {
 		s.log.Warn("could not hold snapshot yet, will retry", "snapshot", a.PrevID, "err", err)
 		return
 	}
 	a.Held = true
-	snaps, err := hot.Snapshots(ctx)
+	snaps, err := repo.Snapshots(ctx)
 	if err != nil {
 		return
 	}
@@ -544,12 +578,16 @@ func (s *Scheduler) maybeSampleSize(ctx context.Context) {
 	if !forecast.DueForSample(s.store.LastSizeSampleAt(), time.Now(), 24*time.Hour) {
 		return
 	}
-	hot, err := s.hotC().StatsMode(ctx, "raw-data")
-	if err != nil {
-		s.log.Warn("size sample: hot stats failed", "err", err)
-		return
+	var hotStored int64
+	for _, k := range s.hot.Keys() {
+		st, err := s.hot.Repo(k).StatsMode(ctx, "raw-data")
+		if err != nil {
+			s.log.Warn("size sample: hot stats failed", "repo", hot.Label(k), "err", err)
+			return
+		}
+		hotStored += int64(st.TotalSize)
 	}
-	sample := state.SizeSample{At: time.Now(), HotStored: int64(hot.TotalSize)}
+	sample := state.SizeSample{At: time.Now(), HotStored: hotStored}
 	if s.cfg.Load().Cold.Repository != "" {
 		if cold, err := s.coldC().StatsMode(ctx, "raw-data"); err != nil {
 			s.log.Warn("size sample: cold stats failed (recording hot only)", "err", err)

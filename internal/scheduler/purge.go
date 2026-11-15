@@ -36,11 +36,12 @@ func (s *Scheduler) PurgePath(ctx context.Context, host, targetPath string) erro
 	}
 
 	// Hot first (the source of truth), then cold (e2).
-	_ = s.hotC().Unlock(ctx)
-	if err := run("rewrite hot", func() (string, error) { return s.hotC().RewriteExcludePath(ctx, host, targetPath) }); err != nil {
+	hotRepo := s.hot.ForHost(ctx, host)
+	_ = hotRepo.Unlock(ctx)
+	if err := run("rewrite hot", func() (string, error) { return hotRepo.RewriteExcludePath(ctx, host, targetPath) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "hot rewrite failed")
 	}
-	if err := run("prune hot", func() (string, error) { return s.hotC().Prune(ctx) }); err != nil {
+	if err := run("prune hot", func() (string, error) { return hotRepo.Prune(ctx) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "hot prune failed")
 	}
 	_ = s.coldC().Unlock(ctx)
@@ -73,9 +74,13 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 	var b strings.Builder
 
 	// Look up host+time to find the cold twin.
-	hotSnaps, err := s.hotC().Snapshots(ctx)
+	hotSnaps, err := s.hot.Snapshots(ctx)
 	if err != nil {
 		return s.finishPurge(start, "", err, "list hot snapshots failed")
+	}
+	hotRepo, err := s.hot.ForSnapshot(ctx, hotSnapID)
+	if err != nil {
+		return s.finishPurge(start, "", err, "snapshot not found")
 	}
 	var host string
 	var when time.Time
@@ -86,13 +91,13 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 		}
 	}
 
-	_ = s.hotC().Unlock(ctx)
-	out, err := s.hotC().RewriteExcludePathSnap(ctx, hotSnapID, targetPath)
+	_ = hotRepo.Unlock(ctx)
+	out, err := hotRepo.RewriteExcludePathSnap(ctx, hotSnapID, targetPath)
 	fmt.Fprintf(&b, "== rewrite hot version ==\n%s\n", strings.TrimSpace(out))
 	if err != nil {
 		return s.finishPurge(start, b.String(), err, "hot rewrite failed")
 	}
-	if _, err := s.hotC().Prune(ctx); err != nil {
+	if _, err := hotRepo.Prune(ctx); err != nil {
 		fmt.Fprintf(&b, "prune hot error: %v\n", err)
 	}
 
@@ -131,9 +136,13 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 	var b strings.Builder
 
 	// Identify the hot snapshot so we can find its cold twin by host+time.
-	hotSnaps, err := s.hotC().Snapshots(ctx)
+	hotSnaps, err := s.hot.Snapshots(ctx)
 	if err != nil {
 		return s.finishDelete(start, "", err, "list hot snapshots failed")
+	}
+	hotRepo, err := s.hot.ForSnapshot(ctx, hotSnapID)
+	if err != nil {
+		return s.finishDelete(start, "", err, "snapshot not found")
 	}
 	var target *struct {
 		host string
@@ -149,13 +158,13 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 		}
 	}
 
-	_ = s.hotC().Unlock(ctx)
-	out, err := s.hotC().ForgetSnapshot(ctx, hotSnapID)
+	_ = hotRepo.Unlock(ctx)
+	out, err := hotRepo.ForgetSnapshot(ctx, hotSnapID)
 	fmt.Fprintf(&b, "== forget hot ==\n%s\n", strings.TrimSpace(out))
 	if err != nil {
 		return s.finishDelete(start, b.String(), err, "forget hot failed")
 	}
-	if _, err := s.hotC().Prune(ctx); err != nil {
+	if _, err := hotRepo.Prune(ctx); err != nil {
 		fmt.Fprintf(&b, "prune hot error: %v\n", err)
 	}
 

@@ -55,6 +55,7 @@ type Client struct {
 	Paths        []string  `json:"paths"`
 	Stale        bool      `json:"stale"`
 	HotOnly      bool      `json:"hot_only,omitempty"` // excluded from the offsite mirror
+	OwnRepo      bool      `json:"own_repo,omitempty"` // has its own repository and login
 	// Anomaly is set when the latest backup lost a large share of its files; it
 	// stays until dismissed on the dashboard.
 	Anomaly *Anomaly `json:"anomaly,omitempty"`

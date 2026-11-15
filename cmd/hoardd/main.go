@@ -88,6 +88,15 @@ func main() {
 	// each op, so repo/endpoint/credential changes apply without a restart. The
 	// API server doubles as the alert Notifier for the scheduler.
 	cfgStore := config.NewStore(cfg, *cfgPath)
+	// Keep rest-server's login file in step with the enrolled clients.
+	if cfg.PrivateRepos {
+		if err := cfg.WriteHtpasswd(); err != nil {
+			log.Error("write rest-server login file", "err", err)
+		}
+	}
+	if cfg.DashboardPassword == "" {
+		log.Warn("the dashboard has no password: anyone who can reach this port can read and delete backups; set one in Settings or HOARD_DASHBOARD_PASSWORD")
+	}
 	sched := scheduler.New(cfgStore, *resticBin, store, log)
 	srv := api.New(cfgStore, *resticBin, sched, store, log, sub)
 	sched.SetNotifier(srv)

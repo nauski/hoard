@@ -73,6 +73,13 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 		b.WriteString("  restic restore latest --target ./restored\n")
 	}
 
+	if len(c.Clients) > 0 {
+		b.WriteString("\nPER-CLIENT REPOSITORIES (each enrolled machine has its own repo on the\nNAS, with its own password; all of them are copied into the offsite repo\nabove unless listed as NOT OFFSITE):\n\n")
+		for _, n := range clientNames(c) {
+			fmt.Fprintf(&b, "  %-20s %s\n  %-20s password: %s\n", n, c.ClientRepo(n).Repository, "", c.Clients[n].Password)
+		}
+	}
+
 	return b.String()
 }
 

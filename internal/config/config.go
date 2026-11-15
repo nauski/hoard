@@ -4,11 +4,15 @@
 package config
 
 import (
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -48,6 +52,75 @@ type Config struct {
 
 	// SMTP is the optional email alert channel.
 	SMTP SMTP `json:"smtp"`
+
+	// DashboardPassword protects the dashboard and its API (HTTP Basic auth,
+	// any user name). Empty leaves them open to anyone who can reach the port.
+	DashboardPassword string `json:"dashboard_password,omitempty"`
+
+	// PrivateRepos is set from HOARD_REST_PRIVATE at every start (it must
+	// agree with how the entrypoint launched rest-server, so it is never
+	// persisted). When on, each enrolled client gets its own repository and
+	// its own login, and cannot reach any other client's backups.
+	PrivateRepos bool `json:"-"`
+
+	// Clients are the machines enrolled with their own repository.
+	Clients map[string]Client `json:"clients,omitempty"`
+}
+
+// Client is one enrolled machine's credentials. Its repository lives at
+// ReposDir()/<name> on the server's disk.
+type Client struct {
+	// Password is the restic password of this client's repository.
+	Password string `json:"password"`
+	// HTTPPassword is the client's rest-server (and report API) login; the
+	// user name is the client name.
+	HTTPPassword string `json:"http_password"`
+}
+
+// ReposDir is where per-client repositories live: next to the shared hot repo.
+func (c *Config) ReposDir() string { return filepath.Join(filepath.Dir(c.Hot.Repository), "repos") }
+
+// HtpasswdPath is the rest-server login file hoardd maintains in private mode.
+func (c *Config) HtpasswdPath() string {
+	return filepath.Join(filepath.Dir(c.Hot.Repository), "htpasswd")
+}
+
+// ClientRepo returns the on-disk repository of an enrolled client.
+func (c *Config) ClientRepo(name string) Repo {
+	return Repo{Repository: filepath.Join(c.ReposDir(), name), Password: c.Clients[name].Password}
+}
+
+var clientName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+
+// ValidClientName reports whether s can be a client name: it becomes a
+// directory name and an HTTP user name.
+func ValidClientName(s string) bool { return clientName.MatchString(s) }
+
+// Htpasswd renders the rest-server login file for the enrolled clients. The
+// {SHA} form needs no dependency; the passwords are long random strings, so
+// the lack of a salt costs nothing.
+func (c *Config) Htpasswd() string {
+	names := make([]string, 0, len(c.Clients))
+	for n := range c.Clients {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	var b strings.Builder
+	for _, n := range names {
+		sum := sha1.Sum([]byte(c.Clients[n].HTTPPassword))
+		fmt.Fprintf(&b, "%s:{SHA}%s\n", n, base64.StdEncoding.EncodeToString(sum[:]))
+	}
+	return b.String()
+}
+
+// WriteHtpasswd writes the login file atomically. rest-server picks up
+// changes by itself within about half a minute.
+func (c *Config) WriteHtpasswd() error {
+	p := c.HtpasswdPath()
+	if err := os.WriteFile(p+".tmp", []byte(c.Htpasswd()), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(p+".tmp", p)
 }
 
 // Repo describes a single restic repository and the credentials to open it.
@@ -281,6 +354,10 @@ func (c *Config) applyEnv() {
 	if c.Alert.WebhookURL == "" {
 		c.Alert.WebhookURL = os.Getenv("HOARD_ALERT_WEBHOOK_URL")
 	}
+	if c.DashboardPassword == "" {
+		c.DashboardPassword = os.Getenv("HOARD_DASHBOARD_PASSWORD")
+	}
+	c.PrivateRepos = os.Getenv("HOARD_REST_PRIVATE") == "true"
 }
 
 func (c *Config) validate() error {

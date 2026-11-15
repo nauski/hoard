@@ -84,6 +84,7 @@
 <header>
   <h1>🗄️ hoard <span id="ver" class="sub" style="font-weight:400" title="hoard server version"></span></h1>
   <span id="running" class="badge b-idle">idle</span>
+  <span id="authWarn" class="badge b-bad" hidden title="Anyone who can reach this page can read, download and delete every backup, and download the recovery kit with all passwords. Set a dashboard password in Settings.">no dashboard password</span>
   <div class="repo">
     <div>hot: <span class="help below" tabindex="0" data-tip="Local staging repo on the NAS. Clients push backups here first over your LAN (fast). Mirrored offsite on a schedule.">ⓘ</span> <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b> <span id="hotSaved" class="sub"></span></div>
     <div>cold: <span class="help below" tabindex="0" data-tip="Offsite copy in S3 (IDrive e2) — your disaster-recovery copy. Survives the NAS dying.">ⓘ</span> <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b> <span id="coldSaved" class="sub"></span><span class="help below" tabindex="0" data-tip="restic compresses and deduplicates. logical = total size of your files; stored = actual repo size after that; % saved = how much smaller it is.">ⓘ</span></div>
@@ -194,6 +195,11 @@
     <div style="margin-top:6px"><label><input type="checkbox" id="cfgRetHot"> also apply retention to the hot repo (off = the hot repo keeps every snapshot; turning it on deletes old snapshots there at the next mirror)</label></div>
     <div class="bar" style="margin-top:8px"><button class="secondary" onclick="previewRetention()">Preview</button></div>
     <div class="sub" id="retMsg" style="margin-top:6px"></div>
+    <div class="sub" style="margin:12px 0 8px">Access</div>
+    <div class="setgrid">
+      <div><label class="sub">Dashboard password<span class="help" tabindex="0" data-tip="Protects this dashboard and its API: browsing, downloads, deletes, settings and the recovery kit. The browser asks for it once (any user name). Leave blank to keep the current one. To remove it, delete dashboard_password from the config file.">ⓘ</span></label><input id="cfgDashPw" type="password" autocomplete="new-password" placeholder="unchanged"> <span id="cfgDashPwState" class="sub"></span></div>
+      <div><label class="sub">Client repositories</label><div id="cfgClients" class="sub"></div></div>
+    </div>
     <div class="sub" style="margin:12px 0 8px">Alerts</div>
     <div class="setgrid">
       <div style="grid-column:1/-2"><label class="sub">Webhook URL (ntfy / Discord-compatible)</label><input id="cfgWebhook" type="text" placeholder="https://ntfy.sh/your-topic"></div>
@@ -313,6 +319,7 @@ async function refresh(){
   try{
     const st = await (await fetch("/api/status")).json();
     if(st.version){ $("#ver").textContent="v"+st.version; document.title="hoard v"+st.version+" — backup control"; }
+    $("#authWarn").hidden = st.auth_enabled !== false;
     $("#hotRepo").textContent = st.hot_repo || "—";
     $("#coldRepo").textContent = st.cold_repo || "—";
     const run = st.running || "";
@@ -408,6 +415,7 @@ async function refresh(){
     $("#clients").innerHTML = keys.length ? keys.map(k=>{
       const c = clients[k];
       const st2 = (c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>')
+        + (c.own_repo ? ' <span class="badge b-idle" title="This machine has its own repository and login; other machines cannot read its backups">own repo</span>' : (st.private_repos ? ' <span class="badge b-warn" title="Still on the shared repo, which clients can no longer reach. Enroll this machine again to give it its own repository.">shared repo: re-enroll</span>' : ''))
         + (c.hot_only ? ' <span class="badge b-idle" title="Excluded from the offsite mirror: this host exists only on this server">hot only</span>' : '');
       const an = c.anomaly;
       const anCell = an ? '<div style="margin-top:4px"><span class="badge b-bad" title="The newest backup has far fewer files than the one before it">'+(an.files_before-an.files_after)+' files vanished</span> '
@@ -727,6 +735,11 @@ async function loadConfig(){
     $("#cfgFailThresh").value=c.alert.failure_threshold||3;
     $("#cfgAnFiles").value=(c.anomaly||{}).files||0;
     $("#cfgAnPct").value=(c.anomaly||{}).percent||0;
+    $("#cfgDashPw").value="";
+    $("#cfgDashPwState").textContent=c.dashboard_password_set?"set":"not set: the dashboard is open";
+    $("#cfgClients").textContent=c.private_repos
+      ? ((c.clients||[]).length?"own repository and login: "+c.clients.join(", "):"private repositories are on; no client has enrolled yet")
+      : "off: all clients share one repository and password (set HOARD_REST_PRIVATE=true on the container to give each its own)";
     $("#cfgAnHosts").value=Object.entries((c.anomaly||{}).hosts||{}).map(([h,a])=>h+"="+(a.files||0)).join(", ");
     const sm=c.smtp||{};
     $("#cfgSmtpHost").value=sm.host||""; $("#cfgSmtpPort").value=sm.port||"";
@@ -785,6 +798,7 @@ async function saveConfig(){
       stale_after_hosts:staleHosts,
       verify:$("#cfgVerify").value.trim()},
     retention,
+    dashboard_password:$("#cfgDashPw").value,
     mirror:{exclude_hosts:$("#cfgHotOnly").value.split(",").map(x=>x.trim()).filter(Boolean)},
     alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked,
       on_failure:$("#cfgOnFailure").checked,failure_threshold:(parseInt($("#cfgFailThresh").value,10)||3)},

@@ -46,7 +46,11 @@ func (s *Scheduler) Verify(ctx context.Context) {
 	}
 	client := hosts[rand.Intn(len(hosts))]
 
-	hot := s.hotC()
+	hot, err := s.hot.ForSnapshot(ctx, client.SnapshotID)
+	if err != nil {
+		s.failVerify(rec, client.Hostname, "", "find snapshot: "+err.Error())
+		return
+	}
 	files, err := hot.ListFiles(ctx, client.SnapshotID)
 	if err != nil {
 		s.failVerify(rec, client.Hostname, "", "list files: "+err.Error())

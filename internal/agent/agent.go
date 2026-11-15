@@ -370,6 +370,12 @@ func (a *Agent) report(client *http.Client, base string, live *Live, outcome *re
 		return ""
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// A client with its own repository logs in to the report API with the same
+	// user and password that its repository URL carries.
+	if u, err := url.Parse(strings.TrimPrefix(a.GetConfig().Repository, "rest:")); err == nil && u.User != nil {
+		pw, _ := u.User.Password()
+		req.SetBasicAuth(u.User.Username(), pw)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""
@@ -450,14 +456,18 @@ func (a *Agent) SetConfig(c Config) error {
 // Enroll redeems a token against the hoard server and writes the returned repo
 // URL, password (to a 0600 file next to the config), and server URL into config.
 func (a *Agent) Enroll(ctx context.Context, serverURL, token string) error {
-	body, _ := json.Marshal(map[string]string{"token": token})
+	// The host name lets a server running private repositories create this
+	// machine's own repository and login; older servers ignore it.
+	body, _ := json.Marshal(map[string]string{"token": token, "host": a.GetConfig().Host})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(serverURL, "/")+"/api/enroll/redeem", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	cl := &http.Client{Timeout: 10 * time.Second}
+	// A server creating this machine's own repository replies only once the
+	// new login is live, which can take most of a minute.
+	cl := &http.Client{Timeout: 90 * time.Second}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return err

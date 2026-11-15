@@ -91,6 +91,12 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing host"})
 		return
 	}
+	// A client with its own login must present it (the dashboard password
+	// also works); hosts on the shared repo have nothing to present.
+	if _, own := s.cfg.Load().Clients[req.Host]; own && !s.isClient(r, req.Host) && !s.isAdmin(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "client login required"})
+		return
+	}
 	cmd := s.live.report(req.Host, req.Live, time.Now())
 	if req.LastResult != nil {
 		s.recordOutcome(req.Host, req.LastResult.OK, req.LastResult.Message)

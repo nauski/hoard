@@ -852,6 +852,29 @@ func (c *Client) EnsureInit(ctx context.Context) error {
 	return err
 }
 
+// InitLike initializes the repo if it does not exist yet, copying the chunker
+// parameters of `like` when given, so identical files in both repositories
+// produce identical blobs and still deduplicate when both are copied into one
+// offsite repo.
+func (c *Client) InitLike(ctx context.Context, like *config.Repo) error {
+	if _, err := c.run(ctx, "cat", "config"); err == nil {
+		return nil
+	}
+	args := []string{"init"}
+	if like != nil {
+		args = append(args, "--copy-chunker-params", "--from-repo", like.Repository)
+	}
+	cmd := exec.CommandContext(ctx, c.bin, args...)
+	cmd.Env = append(cmd.Environ(), c.env()...)
+	if like != nil {
+		cmd.Env = append(cmd.Env, "RESTIC_FROM_PASSWORD="+like.Password)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("restic init: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // StreamHooks are optional callbacks fired while a long-running command
 // (copy/check/forget --prune) streams its output line by line.
 type StreamHooks struct {

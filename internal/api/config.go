@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/nauski/hoard/internal/hot"
+	"github.com/nauski/hoard/internal/restic"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/nauski/hoard/internal/config"
@@ -43,6 +46,11 @@ type configResponse struct {
 	Cold           coldView         `json:"cold"`
 	SMTP           smtpView         `json:"smtp"`
 	RecoveryKitAck bool             `json:"recovery_kit_ack"`
+	// DashboardPasswordSet is write-only state: the password itself never
+	// leaves the server. Clients lists the machines with their own repository.
+	DashboardPasswordSet bool     `json:"dashboard_password_set"`
+	PrivateRepos         bool     `json:"private_repos"`
+	Clients              []string `json:"clients"`
 }
 
 func (s *Server) configView() configResponse {
@@ -68,7 +76,20 @@ func (s *Server) configView() configResponse {
 			From: c.SMTP.From, To: c.SMTP.To, PasswordSet: c.SMTP.Password != "",
 		},
 		RecoveryKitAck: c.RecoveryKitAck,
+
+		DashboardPasswordSet: c.DashboardPassword != "",
+		PrivateRepos:         c.PrivateRepos,
+		Clients:              clientNames(c),
 	}
+}
+
+func clientNames(c *config.Config) []string {
+	names := make([]string, 0, len(c.Clients))
+	for n := range c.Clients {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -86,8 +107,10 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		Retention *config.Retention `json:"retention"`
 		Mirror    *config.Mirror    `json:"mirror"`
 		Anomaly   *config.Anomaly   `json:"anomaly"`
-		Alert     *config.Alert     `json:"alert"`
-		Cold      *struct {
+		// DashboardPassword sets a new dashboard password when non-empty.
+		DashboardPassword string        `json:"dashboard_password"`
+		Alert             *config.Alert `json:"alert"`
+		Cold              *struct {
 			Repository         *string `json:"repository"`
 			S3AccessKeyID      *string `json:"s3_access_key_id"`
 			S3SecretAccessKey  *string `json:"s3_secret_access_key"`
@@ -115,6 +138,9 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Anomaly != nil {
 			c.Anomaly = *req.Anomaly
+		}
+		if req.DashboardPassword != "" {
+			c.DashboardPassword = req.DashboardPassword
 		}
 		if req.Schedule != nil {
 			c.Schedule = *req.Schedule
@@ -202,10 +228,14 @@ func (s *Server) handleRetentionPreview(w http.ResponseWriter, r *http.Request) 
 		resp["count"], resp["snapshots"] = len(rm), rm
 	}
 	if ret.ApplyToHot {
-		rm, err := s.hot().ForgetDryRun(ctx, ret)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "hot repo: " + err.Error()})
-			return
+		var rm []restic.Snapshot
+		for _, k := range s.hot().Keys() {
+			part, err := s.hot().Repo(k).ForgetDryRun(ctx, ret)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": hot.Label(k) + ": " + err.Error()})
+				return
+			}
+			rm = append(rm, part...)
 		}
 		resp["hot_count"], resp["hot_snapshots"] = len(rm), rm
 	}

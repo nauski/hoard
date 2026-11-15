@@ -15,6 +15,7 @@ import (
 
 	"github.com/nauski/hoard/internal/config"
 	"github.com/nauski/hoard/internal/forecast"
+	"github.com/nauski/hoard/internal/hot"
 	"github.com/nauski/hoard/internal/restic"
 	"github.com/nauski/hoard/internal/scheduler"
 	"github.com/nauski/hoard/internal/state"
@@ -53,9 +54,8 @@ func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store 
 // request timeouts.
 const lockWait = "10m"
 
-func (s *Server) hot() *restic.Client {
-	return restic.New(s.resticBin, s.cfg.Load().Hot).WithRetryLock(lockWait)
-}
+// hot is the hot storage: the shared repo plus per-client repos.
+func (s *Server) hot() *hot.Set { return s.sched.Hot() }
 func (s *Server) cold() *restic.Client {
 	return restic.New(s.resticBin, s.cfg.Load().Cold).WithRetryLock(lockWait)
 }
@@ -100,7 +100,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.Handle("GET /", noCache(http.FileServerFS(s.webFS)))
-	return logging(s.log, mux)
+	return logging(s.log, s.requireAdmin(mux))
 }
 
 type statusResponse struct {
@@ -114,6 +114,10 @@ type statusResponse struct {
 	LastVerify *state.VerifyResult        `json:"last_verify,omitempty"`
 	Outcomes   map[string]state.Outcome   `json:"outcomes"`
 	ServerJob  *scheduler.ServerJobView   `json:"server_job,omitempty"`
+	// AuthEnabled is false while the dashboard has no password; PrivateRepos
+	// is true when clients enroll into their own repositories.
+	AuthEnabled  bool `json:"auth_enabled"`
+	PrivateRepos bool `json:"private_repos"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +133,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LastVerify: snap.LastVerify,
 		Outcomes:   snap.ClientOutcomes,
 		ServerJob:  s.sched.ServerJob(),
+
+		AuthEnabled:  s.cfg.Load().DashboardPassword != "",
+		PrivateRepos: s.cfg.Load().PrivateRepos,
 	})
 }
 
@@ -229,7 +236,25 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 		out[key] = st
 	}
-	add("hot", s.hot())
+	// Hot is the sum over the shared repo and every client's own repo.
+	var hotTotal restic.Stats
+	hotOK := false
+	for _, k := range s.hot().Keys() {
+		st, err := s.hot().Repo(k).StatsMode(ctx, "raw-data")
+		if err != nil {
+			continue
+		}
+		hotOK = true
+		hotTotal.TotalSize += st.TotalSize
+		hotTotal.TotalFileCount += st.TotalFileCount
+		hotTotal.SnapshotsCount += st.SnapshotsCount
+		if lg, err := s.hot().Repo(k).StatsMode(ctx, "restore-size"); err == nil {
+			hotTotal.LogicalSize += lg.TotalSize
+		}
+	}
+	if hotOK {
+		out["hot"] = &hotTotal
+	}
 	add("cold", s.cold())
 	writeJSON(w, http.StatusOK, out)
 }
@@ -250,7 +275,12 @@ func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	entries, err := s.hot().Ls(ctx, id, r.URL.Query().Get("path"))
+	repo, err := s.hot().ForSnapshot(ctx, id)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	entries, err := repo.Ls(ctx, id, r.URL.Query().Get("path"))
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -268,7 +298,12 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	d, err := s.hot().Diff(ctx, a, b)
+	repo, err := s.hot().ForSnapshot(ctx, a)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	d, err := repo.Diff(ctx, a, b)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -288,7 +323,12 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
 	ctx := r.Context()
-	if err := s.hot().Dump(ctx, id, p, w); err != nil {
+	repo, err := s.hot().ForSnapshot(ctx, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if err := repo.Dump(ctx, id, p, w); err != nil {
 		// Headers may already be sent; log and give up.
 		s.log.Error("download failed", "err", err, "path", p)
 	}
@@ -350,7 +390,7 @@ func (s *Server) handleFind(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
-	found, err := s.hot().FindTimeline(ctx, host, q)
+	found, err := s.hot().ForHost(ctx, host).FindTimeline(ctx, host, q)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -372,7 +412,12 @@ func (s *Server) handleUntag(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	if err := s.hot().Tag(ctx, req.ID, nil, []string{req.Tag}); err != nil {
+	repo, err := s.hot().ForSnapshot(ctx, req.ID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := repo.Tag(ctx, req.ID, nil, []string{req.Tag}); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}

@@ -19,7 +19,12 @@ func (s *Scheduler) Restore(ctx context.Context, snapID, subpath, target, overwr
 	defer s.release()
 
 	start := time.Now()
-	res, out, err := s.hotC().Restore(ctx, snapID, subpath, target, overwrite, false, hooks)
+	var res *restic.RestoreResult
+	var out string
+	repo, err := s.hot.ForSnapshot(ctx, snapID)
+	if err == nil {
+		res, out, err = repo.Restore(ctx, snapID, subpath, target, overwrite, false, hooks)
+	}
 	jr := state.JobResult{Job: "restore", StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		jr.OK = false
