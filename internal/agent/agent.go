@@ -409,6 +409,9 @@ func (c Config) effective() (Config, []string) {
 	e.Excludes = append([]string(nil), m.Excludes...)
 	var ignored []string
 	for _, x := range c.Excludes {
+		if slices.Contains(m.Excludes, x) {
+			continue // the server already applies this one; nothing was lost
+		}
 		ok := false
 		for _, p := range extras {
 			if strings.HasPrefix(x, strings.TrimRight(p, "/")+"/") {
