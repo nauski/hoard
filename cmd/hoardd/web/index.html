@@ -345,6 +345,13 @@ async function refresh(){
     const st = await (await fetch("/api/status")).json();
     if(st.version){ $("#ver").textContent="v"+st.version; document.title="hoard v"+st.version+" — backup control"; }
     $("#authWarn").hidden = st.auth_enabled !== false;
+    if(lastTrigger && !st.running){
+      const r=(st.jobs||{})[lastTrigger.job];
+      if(r && new Date(r.ended_at).getTime() >= lastTrigger.at-2000){
+        $("#actionMsg").textContent = lastTrigger.job+" finished: "+(r.ok?"ok":"failed")+(r.message?" · "+r.message:"");
+        lastTrigger=null;
+      }
+    }
     $("#hotRepo").textContent = st.hot_repo || "—";
     $("#coldRepo").textContent = st.cold_repo || "—";
     const run = st.running || "";
@@ -478,11 +485,15 @@ async function refresh(){
   }catch(e){}
 }
 
+// The job a button started last, so the message can be replaced by its result
+// once it finishes instead of saying "started" forever.
+let lastTrigger=null;
 async function trigger(job){
   $("#actionMsg").textContent = "starting "+job+"…";
   const res = await fetch("/api/actions/"+job, {method:"POST"});
   const j = await res.json();
   $("#actionMsg").textContent = res.ok ? (job+" started") : ("error: "+(j.error||res.status));
+  lastTrigger = res.ok ? {job, at:Date.now()} : null;
   if(res.ok){ const sj=$("#serverJob"); if(sj) sj.textContent="started…"; }
   setTimeout(refresh, 500);
 }
