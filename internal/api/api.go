@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -192,6 +194,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	for h, c := range clients {
 		wish := s.store.ClientInfoFor(h).OffsiteWish
 		sc := statusClient{Client: c, Offsite: cfg.OffsiteFor(h, wish), OffsiteWish: wish}
+		sc.HotOnly = len(sc.Offsite) == 0
 		if routed, ok := cfg.Routing[h]; ok {
 			sc.OffsiteServer = append([]string{}, routed...)
 		}
@@ -206,7 +209,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Now:        now,
 		Running:    s.sched.Running(),
 		Clients:    view,
-		Jobs:       snap.LastByJob,
+		Jobs:       legacyJobs(snap.LastByJob, cfg),
 		Offsite:    stores,
 		HotRepo:    s.cfg.Load().Hot.Repository,
 		LastVerify: snap.LastVerify,
@@ -354,8 +357,18 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 		forecast.Storage
 	}
 	stores := []storageForecast{}
-	for i, o := range s.cfg.Load().Offsite {
-		stores = append(stores, storageForecast{o.ID, o.Label, forecast.ProjectStorage(samples, o.ID, i == 0, horizon)})
+	// Old samples only have one cold size: it belongs to e2 when that exists,
+	// else to the first storage.
+	offsite := s.cfg.Load().Offsite
+	legacy := ""
+	if len(offsite) > 0 {
+		legacy = offsite[0].ID
+	}
+	if _, ok := s.cfg.Load().OffsiteByID("e2"); ok {
+		legacy = "e2"
+	}
+	for _, o := range offsite {
+		stores = append(stores, storageForecast{o.ID, o.Label, forecast.ProjectStorage(samples, o.ID, o.ID == legacy, horizon)})
 	}
 	writeJSON(w, http.StatusOK, struct {
 		forecast.Projection
@@ -563,4 +576,22 @@ func logging(log *slog.Logger, next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		log.Debug("http", "method", r.Method, "path", r.URL.Path, "dur", time.Since(start))
 	})
+}
+
+// legacyJobs shows job results recorded before per-storage jobs (mirror, check,
+// prune without "@id") under the first storage, unless that job already has
+// per-storage entries. The stored history is not rewritten.
+func legacyJobs(jobs map[string]state.JobResult, cfg *config.Config) map[string]state.JobResult {
+	if len(cfg.Offsite) == 0 {
+		return jobs
+	}
+	out := maps.Clone(jobs)
+	for _, j := range []string{"mirror", "check", "prune"} {
+		old, ok := jobs[j]
+		if !ok || slices.ContainsFunc(cfg.Offsite, func(o config.Offsite) bool { _, has := jobs[state.JobKey(j, o.ID)]; return has }) {
+			continue
+		}
+		out[state.JobKey(j, cfg.Offsite[0].ID)] = old
+	}
+	return out
 }

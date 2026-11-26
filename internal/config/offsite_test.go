@@ -1,7 +1,7 @@
 package config
 
 import (
-	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +19,7 @@ func TestNewOffsiteID(t *testing.T) {
 		{"IDrive e2", []string{"idrive-e2", "idrive-e2-2"}, "idrive-e2-3"},
 		{"  ÄÖ!! ", nil, "storage"},
 		{"B2 (EU)", nil, "b2-eu"},
+		{"hot", nil, "hot-2"}, // "hot" is the hot repo's key in /api/stats
 	}
 	for _, c := range cases {
 		if got := NewOffsiteID(c.label, c.taken); got != c.want {
@@ -141,7 +142,71 @@ func TestSavedConfigHasNoLegacyKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(p)
-	if bytes.Contains(raw, []byte(`"cold"`)) || bytes.Contains(raw, []byte(`"exclude_hosts"`)) || bytes.Contains(raw, []byte(`"mirror":{`)) {
-		t.Fatalf("legacy keys written: %s", raw)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"cold", "mirror"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("legacy key %q written: %s", k, raw)
+		}
+	}
+}
+
+func TestEmptyOffsiteListSurvivesWithEnv(t *testing.T) {
+	p := writeCfg(t, `{"hot":{"repository":"/data/hot","password":"h"}}`)
+	t.Setenv("HOARD_COLD_REPOSITORY", "sftp://u@h/p")
+	c, err := Load(p)
+	if err != nil || len(c.Offsite) != 1 {
+		t.Fatalf("seed: %v %+v", err, c.Offsite)
+	}
+	st := NewStore(c, p)
+	if err := st.Update(func(c *Config) { c.Offsite = []Offsite{} }); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c2.Offsite) != 0 {
+		t.Fatalf("removed storage came back from env: %+v", c2.Offsite)
+	}
+}
+
+func TestEnvSecretsNotOnUnrelatedStorage(t *testing.T) {
+	p := writeCfg(t, `{"hot":{"repository":"/data/hot","password":"h"},
+	  "offsite":[{"id":"box","label":"Box","repository":"/x"},{"id":"e2","label":"e2","repository":"s3:y"}]}`)
+	t.Setenv("HOARD_COLD_PASSWORD", "envpw")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Offsite[0].Password != "" || c.Offsite[1].Password != "envpw" {
+		t.Errorf("secrets: box=%q e2=%q", c.Offsite[0].Password, c.Offsite[1].Password)
+	}
+}
+
+func TestEnvIDriveSeedsE2(t *testing.T) {
+	p := writeCfg(t, `{"hot":{"repository":"/data/hot","password":"h"}}`)
+	t.Setenv("HOARD_COLD_REPOSITORY", "s3:https://s3.eu-central-2.idrivee2.com/b")
+	t.Setenv("HOARD_COLD_PASSWORD", "pw")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Offsite) != 1 || c.Offsite[0].ID != "e2" || c.Offsite[0].Label != "IDrive e2" || c.Offsite[0].Password != "pw" {
+		t.Fatalf("seeded = %+v", c.Offsite)
+	}
+}
+
+func TestMigrateKeepsColdFieldsWhenRepoFromEnv(t *testing.T) {
+	p := writeCfg(t, `{"hot":{"repository":"/data/hot","password":"h"},"cold":{"password":"c","limit_upload_kibps":500}}`)
+	t.Setenv("HOARD_COLD_REPOSITORY", "s3:https://x/b")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Offsite) != 1 || c.Offsite[0].Repository != "s3:https://x/b" || c.Offsite[0].Password != "c" || c.Offsite[0].LimitUploadKiBps != 500 {
+		t.Fatalf("migrated = %+v", c.Offsite)
 	}
 }

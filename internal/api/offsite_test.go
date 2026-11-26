@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -158,9 +160,45 @@ func twoOffsiteConfig() *config.Config {
 	}}
 }
 
-func TestReportCarriesWishAndStorages(t *testing.T) {
+// report posts to /api/report; login adds host's own Basic credentials.
+func report(t *testing.T, srv *Server, body string, login bool) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/report", strings.NewReader(body))
+	if login {
+		r.SetBasicAuth("h", "httppw")
+	}
+	srv.handleReport(w, r)
+	return w
+}
+
+func ownRepoConfig() *config.Config {
+	c := twoOffsiteConfig()
+	c.Clients = map[string]config.Client{"h": {HTTPPassword: "httppw"}}
+	return c
+}
+
+func TestReportWishIgnoredForSharedRepoHost(t *testing.T) {
 	srv, _, st := offsiteServer(t, twoOffsiteConfig())
-	w := post(t, srv.handleReport, "/api/report", `{"host":"h","checkin":true,"offsite":["b"]}`)
+	if w := report(t, srv, `{"host":"shared","checkin":true,"offsite":["b"]}`, false); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if got := st.ClientInfoFor("shared").OffsiteWish; len(got) != 0 {
+		t.Fatalf("unauthenticated wish stored: %v", got)
+	}
+}
+
+func TestReportWishCleaned(t *testing.T) {
+	srv, _, st := offsiteServer(t, ownRepoConfig())
+	report(t, srv, `{"host":"h","checkin":true,"offsite":["b","zzz","b","a","a"]}`, true)
+	if got := st.ClientInfoFor("h").OffsiteWish; !reflect.DeepEqual(got, []string{"b", "a"}) {
+		t.Fatalf("wish: %v", got)
+	}
+}
+
+func TestReportCarriesWishAndStorages(t *testing.T) {
+	srv, _, st := offsiteServer(t, ownRepoConfig())
+	w := report(t, srv, `{"host":"h","checkin":true,"offsite":["b"]}`, true)
 	if w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
@@ -181,11 +219,11 @@ func TestReportCarriesWishAndStorages(t *testing.T) {
 		t.Fatalf("server: %v", reply.Server)
 	}
 	// field absent: wish untouched; explicit empty list: cleared
-	post(t, srv.handleReport, "/api/report", `{"host":"h","checkin":true}`)
+	report(t, srv, `{"host":"h","checkin":true}`, true)
 	if got := st.ClientInfoFor("h").OffsiteWish; !reflect.DeepEqual(got, []string{"b"}) {
 		t.Fatalf("absent field changed wish: %v", got)
 	}
-	post(t, srv.handleReport, "/api/report", `{"host":"h","checkin":true,"offsite":[]}`)
+	report(t, srv, `{"host":"h","checkin":true,"offsite":[]}`, true)
 	if got := st.ClientInfoFor("h").OffsiteWish; len(got) != 0 {
 		t.Fatalf("empty list should clear: %v", got)
 	}
@@ -230,5 +268,158 @@ func TestOffsiteEndpointsUnknownID(t *testing.T) {
 		if w.Code != 404 {
 			t.Fatalf("got %d", w.Code)
 		}
+	}
+}
+
+func TestConfigRejectsRepeatedID(t *testing.T) {
+	srv, cfg, _ := offsiteServer(t, twoOffsiteConfig())
+	body := `{"offsite":[{"id":"a","label":"Alpha","repository":"r:a"},{"id":"a","label":"Gamma","repository":"r:g"}]}`
+	if w := post(t, srv.handleSetConfig, "/api/config", body); w.Code != 400 {
+		t.Fatalf("got %d %s", w.Code, w.Body)
+	}
+	if len(cfg.Load().Offsite) != 2 {
+		t.Fatal("rejected post changed the list")
+	}
+}
+
+func TestConfigNeverIssuesHotID(t *testing.T) {
+	srv, cfg, _ := offsiteServer(t, &config.Config{})
+	post(t, srv.handleSetConfig, "/api/config", `{"offsite":[{"label":"Hot","repository":"r:1"}]}`)
+	if id := cfg.Load().Offsite[0].ID; id == "hot" {
+		t.Fatal("storage got the reserved id hot")
+	}
+}
+
+func TestConfigOffsiteResetsRecoveryKitAck(t *testing.T) {
+	c := twoOffsiteConfig()
+	c.RecoveryKitAck = true
+	srv, cfg, _ := offsiteServer(t, c)
+	same := `{"offsite":[{"id":"a","label":"Alpha","default":true,"repository":"r:a"},{"id":"b","label":"Beta","repository":"r:b"}]}`
+	post(t, srv.handleSetConfig, "/api/config", same)
+	if !cfg.Load().RecoveryKitAck {
+		t.Fatal("unchanged storages must keep the ack")
+	}
+	relabel := `{"offsite":[{"id":"a","label":"Renamed","default":true,"repository":"r:a"},{"id":"b","label":"Beta","repository":"r:b"}]}`
+	post(t, srv.handleSetConfig, "/api/config", relabel)
+	if !cfg.Load().RecoveryKitAck {
+		t.Fatal("a label change must keep the ack")
+	}
+	for name, body := range map[string]string{
+		"password": `{"offsite":[{"id":"a","label":"Alpha","repository":"r:a","password":"new"},{"id":"b","label":"Beta","repository":"r:b"}]}`,
+		"repo":     `{"offsite":[{"id":"a","label":"Alpha","repository":"r:a2"},{"id":"b","label":"Beta","repository":"r:b"}]}`,
+		"added":    `{"offsite":[{"id":"a","label":"Alpha","repository":"r:a"},{"id":"b","label":"Beta","repository":"r:b"},{"label":"New","repository":"r:n"}]}`,
+	} {
+		cfg.Update(func(c *config.Config) { c.RecoveryKitAck = true })
+		if w := post(t, srv.handleSetConfig, "/api/config", body); w.Code != 200 {
+			t.Fatalf("%s: %d %s", name, w.Code, w.Body)
+		}
+		if cfg.Load().RecoveryKitAck {
+			t.Errorf("%s: ack should be reset", name)
+		}
+		// restore the original list for the next case
+		post(t, srv.handleSetConfig, "/api/config", `{"offsite":[{"id":"a","label":"Alpha","repository":"r:a"},{"id":"b","label":"Beta","repository":"r:b"}]}`)
+	}
+}
+
+func TestConfigRetiredIDsNotReused(t *testing.T) {
+	srv, cfg, _ := offsiteServer(t, &config.Config{})
+	post(t, srv.handleSetConfig, "/api/config", `{"offsite":[{"label":"Box","repository":"r:1"}]}`)
+	post(t, srv.handleSetConfig, "/api/config", `{"offsite":[]}`)
+	if got := cfg.Load().Offsite; got == nil || len(got) != 0 {
+		t.Fatalf("empty list must be non-nil empty: %#v", got)
+	}
+	post(t, srv.handleSetConfig, "/api/config", `{"offsite":[{"label":"Box","repository":"r:2"}]}`)
+	if id := cfg.Load().Offsite[0].ID; id != "box-2" {
+		t.Fatalf("id reused: %s", id)
+	}
+}
+
+func TestConfigWithoutOffsiteKeepsList(t *testing.T) {
+	srv, cfg, _ := offsiteServer(t, twoOffsiteConfig())
+	if w := post(t, srv.handleSetConfig, "/api/config", `{"retention":{"keep_daily":3}}`); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if got := cfg.Load().Offsite; len(got) != 2 || got[0].ID != "a" || got[1].Repository != "r:b" {
+		t.Fatalf("list changed: %+v", got)
+	}
+}
+
+func TestStatusHotOnlyReflectsEffectiveSet(t *testing.T) {
+	c := twoOffsiteConfig()
+	c.Routing = map[string][]string{"lab": {}, "wisher": {}}
+	srv, _, st := offsiteServer(t, c)
+	st.SetClients(map[string]state.Client{"lab": {Hostname: "lab"}, "wisher": {Hostname: "wisher"}, "plain": {Hostname: "plain"}})
+	st.SetClientInfo("wisher", state.ClientInfo{OffsiteWish: []string{"b"}})
+	w := httptest.NewRecorder()
+	srv.handleStatus(w, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	var got struct {
+		Clients map[string]struct {
+			HotOnly bool `json:"hot_only"`
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Clients["lab"].HotOnly || got.Clients["wisher"].HotOnly || got.Clients["plain"].HotOnly {
+		t.Fatalf("hot_only: %+v", got.Clients)
+	}
+}
+
+func TestRetentionPreviewSurvivesUnreachableStorage(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "restic")
+	script := `#!/bin/sh
+[ "$RESTIC_REPOSITORY" = r:a ] && { echo "no route to host" >&2; exit 1; }
+case " $* " in
+*" snapshots "*) echo '[{"id":"x","short_id":"x","hostname":"h1","time":"2026-01-01T00:00:00Z"}]' ;;
+*" forget "*) echo '[{"remove":[{"id":"s1","short_id":"s1","hostname":"h1","time":"2026-01-01T00:00:00Z"}]}]' ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.NewStore(twoOffsiteConfig(), "")
+	cfg.Update(func(c *config.Config) { c.Hot = config.Repo{Repository: "/h"} })
+	st, _ := state.Load("")
+	srv := New(cfg, bin, scheduler.New(cfg, bin, st, testLogger()), st, testLogger(), nil)
+	w := post(t, srv.handleRetentionPreview, "/api/config/retention-preview", `{"keep_daily":1}`)
+	if w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	var got struct {
+		Offsite []struct {
+			ID, Error string
+			Count     int
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Offsite) != 2 || !strings.Contains(got.Offsite[0].Error, "no route to host") || got.Offsite[1].Error != "" || got.Offsite[1].Count != 1 {
+		t.Fatalf("offsite: %+v", got.Offsite)
+	}
+}
+
+func TestStatusMapsLegacyJobsToFirstStorage(t *testing.T) {
+	srv, _, st := offsiteServer(t, twoOffsiteConfig())
+	st.RecordJob(state.JobResult{Job: "mirror", OK: true, Message: "old mirror"})
+	st.RecordJob(state.JobResult{Job: "check", OK: true, Message: "old check"})
+	st.RecordJob(state.JobResult{Job: "check", Target: "b", OK: true, Message: "new check"})
+	w := httptest.NewRecorder()
+	srv.handleStatus(w, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	var got struct {
+		Jobs map[string]state.JobResult
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Jobs["mirror@a"].Message != "old mirror" {
+		t.Errorf("legacy mirror not shown for first storage: %+v", got.Jobs)
+	}
+	if _, ok := got.Jobs["check@a"]; ok {
+		t.Errorf("check already has per-storage entries, legacy must not be mapped: %+v", got.Jobs)
+	}
+	if got.Jobs["mirror"].Message != "old mirror" {
+		t.Error("history key must stay")
 	}
 }

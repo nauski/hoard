@@ -25,7 +25,8 @@ func NewOffsiteID(label string, taken []string) string {
 		base = "storage"
 	}
 	id := base
-	for n := 2; slices.Contains(taken, id); n++ {
+	// "hot" is the hot repo's key in /api/stats, so it is always taken.
+	for n := 2; id == "hot" || slices.Contains(taken, id); n++ {
 		id = base + "-" + strconv.Itoa(n)
 	}
 	return id
@@ -69,7 +70,7 @@ func (c *Config) ServerOffsiteFor(host string) []string { return c.OffsiteFor(ho
 
 // migrateOffsite turns the legacy single cold repo into the first storage.
 func (c *Config) migrateOffsite() {
-	if len(c.Offsite) > 0 || c.Cold.Repository == "" {
+	if c.Offsite != nil || c.Cold.Repository == "" {
 		c.Cold, c.Mirror.ExcludeHosts = Repo{}, nil // never written back
 		return
 	}

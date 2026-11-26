@@ -29,7 +29,12 @@ type Config struct {
 	Cold Repo `json:"cold,omitzero"`
 
 	// Offsite are the labelled offsite storages hot snapshots are mirrored to.
-	Offsite []Offsite `json:"offsite,omitempty"`
+	// It is always written, as [] when empty: a missing key means a fresh
+	// install (env may seed a storage), an empty list means all were removed.
+	Offsite []Offsite `json:"offsite"`
+
+	// RetiredOffsite are ids of removed storages, never handed out again.
+	RetiredOffsite []string `json:"retired_offsite,omitempty"`
 
 	// Routing maps a host to the storage ids it is mirrored to. A host without
 	// an entry goes to every Default storage; an empty list means none.
@@ -332,9 +337,12 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
 	}
+	if c.Offsite == nil && c.Cold.Repository == "" && c.Cold != (Repo{}) {
+		c.Cold.Repository = os.Getenv("HOARD_COLD_REPOSITORY") // keep the file's other cold fields
+	}
 	c.migrateOffsite()
 	c.applyEnv()
-	if err := c.validate(); err != nil {
+	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -353,8 +361,9 @@ func (c *Config) applyEnv() {
 	if c.Hot.Password == "" {
 		c.Hot.Password = os.Getenv("HOARD_HOT_PASSWORD")
 	}
-	if len(c.Offsite) == 0 {
-		// Brand-new env-only deployment: seed the first storage.
+	if c.Offsite == nil {
+		// Key absent from the file: brand-new env-only deployment, seed the
+		// first storage. (A saved empty list is non-nil and stays empty.)
 		if repo := os.Getenv("HOARD_COLD_REPOSITORY"); repo != "" {
 			o := Offsite{Label: "Offsite", Default: true, Repo: Repo{Repository: repo}}
 			o.ID = NewOffsiteID(o.Label, nil)
@@ -364,8 +373,12 @@ func (c *Config) applyEnv() {
 			c.Offsite = []Offsite{o}
 		}
 	}
-	if len(c.Offsite) > 0 {
-		o := &c.Offsite[0]
+	// The secrets belong to the legacy e2 storage or the one seeded above.
+	for i := range c.Offsite {
+		o := &c.Offsite[i]
+		if o.ID != "e2" && o.ID != "offsite" {
+			continue
+		}
 		if o.Password == "" {
 			o.Password = os.Getenv("HOARD_COLD_PASSWORD")
 		}
@@ -385,7 +398,8 @@ func (c *Config) applyEnv() {
 	c.PrivateRepos = os.Getenv("HOARD_REST_PRIVATE") == "true"
 }
 
-func (c *Config) validate() error {
+// Validate checks the config for the errors that would stop Load.
+func (c *Config) Validate() error {
 	if c.Hot.Repository == "" {
 		return fmt.Errorf("hot.repository is required (the local repo clients push to)")
 	}

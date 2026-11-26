@@ -117,3 +117,14 @@ func TestDueForSample(t *testing.T) {
 		t.Fatal("25h -> due")
 	}
 }
+
+func TestProjectStorageStoredIsLastPositive(t *testing.T) {
+	s := []state.SizeSample{
+		{At: day(0), Offsite: map[string]int64{"a": 1 << 30}},
+		{At: day(1), Offsite: map[string]int64{"a": 2 << 30}},
+		{At: day(2), Offsite: map[string]int64{"a": 0}}, // storage unreachable at that sample
+	}
+	if p := ProjectStorage(s, "a", false, 90*24*time.Hour); p.Stored != 2<<30 {
+		t.Fatalf("stored = %d, want last positive sample", p.Stored)
+	}
+}

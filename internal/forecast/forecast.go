@@ -102,8 +102,8 @@ func ProjectStorage(samples []state.SizeSample, id string, first bool, horizon t
 		if !ok && first && s.Offsite == nil {
 			v = s.ColdStored
 		}
-		out.Stored = v
 		if v > 0 {
+			out.Stored = v
 			pts = append(pts, pt{toDays(s.At), float64(v)})
 		}
 	}

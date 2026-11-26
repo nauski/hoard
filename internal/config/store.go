@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"sync"
 	"sync/atomic"
 )
 
@@ -12,6 +13,7 @@ import (
 // from the environment.
 type Store struct {
 	p    atomic.Pointer[Config]
+	mu   sync.Mutex // serializes Update's load-copy-store
 	path string
 }
 
@@ -29,6 +31,8 @@ func (s *Store) Load() *Config { return s.p.Load() }
 // Update applies fn to a copy of the current config, swaps it in atomically,
 // and persists it.
 func (s *Store) Update(fn func(*Config)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cur := s.Load()
 	nc := *cur
 	fn(&nc)

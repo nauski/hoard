@@ -57,7 +57,7 @@ func sendEmail(sm config.SMTP, subject, body string) error {
 }
 
 // handleTestEmail sends a fixed test message via the current SMTP config so the
-// user can verify email before relying on it. Mirrors test-cold.
+// user can verify email before relying on it. Like the offsite storage test.
 func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 	sm := s.cfg.Load().SMTP
 	if sm.Host == "" || sm.From == "" || sm.To == "" {

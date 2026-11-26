@@ -64,8 +64,26 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 		fmt.Fprintf(&b, "  restic -r '%s' snapshots              # list what's there\n", o.Repository)
 		fmt.Fprintf(&b, "  restic -r '%s' restore latest --target ./restored\n\n", o.Repository)
 	}
-	if hotOnly := hotOnlyHosts(c); len(hotOnly) > 0 {
-		fmt.Fprintf(&b, "NOT OFFSITE: these hosts are kept hot-only and are never mirrored,\nso they can only be restored from the local repo below: %s\n\n",
+	for _, o := range c.Offsite {
+		hosts := hostsFor(c, o.ID)
+		line := "none listed"
+		if len(hosts) > 0 {
+			line = strings.Join(hosts, ", ")
+		}
+		if o.Default {
+			line += " (and every other host that follows the defaults)"
+		}
+		fmt.Fprintf(&b, "Hosts copied to %s: %s\n", o.Label, line)
+	}
+	if len(c.Offsite) > 0 {
+		b.WriteString("\n")
+	}
+	hotOnly := hotOnlyHosts(c)
+	if len(c.Offsite) > 0 && !slices.ContainsFunc(c.Offsite, func(o config.Offsite) bool { return o.Default }) {
+		b.WriteString("No storage is a default, so a host without its own routing is not copied offsite either.\n")
+	}
+	if len(hotOnly) > 0 {
+		fmt.Fprintf(&b, "NOT OFFSITE: these hosts have no offsite copy and are never mirrored,\nso they can only be restored from the local repo below: %s\n\n",
 			strings.Join(hotOnly, ", "))
 	}
 
@@ -86,7 +104,7 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	}
 
 	if len(c.Clients) > 0 {
-		b.WriteString("\nPER-CLIENT REPOSITORIES (each enrolled machine has its own repo on the\nNAS, with its own password; all of them are copied into the offsite storages\nabove unless listed as NOT OFFSITE):\n\n")
+		b.WriteString("\nPER-CLIENT REPOSITORIES (each enrolled machine has its own repo on the\nNAS, with its own password; see Hosts copied to above for which\noffsite storages hold which host, and NOT OFFSITE for those with none):\n\n")
 		for _, n := range clientNames(c) {
 			fmt.Fprintf(&b, "  %-20s %s\n  %-20s password: %s\n", n, c.ClientRepo(n).Repository, "", c.Clients[n].Password)
 		}
@@ -95,15 +113,38 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	return b.String()
 }
 
-// hotOnlyHosts lists the hosts routed to no offsite storage at all.
+// knownHosts are the hosts the config names: enrolled clients and routed hosts.
+func knownHosts(c *config.Config) []string {
+	hosts := clientNames(c)
+	for h := range c.Routing {
+		if !slices.Contains(hosts, h) {
+			hosts = append(hosts, h)
+		}
+	}
+	slices.Sort(hosts)
+	return hosts
+}
+
+// hostsFor lists the known hosts copied to storage id (the server's routing;
+// a client's own extra choices are not in the config).
+func hostsFor(c *config.Config, id string) []string {
+	var out []string
+	for _, h := range knownHosts(c) {
+		if slices.Contains(c.ServerOffsiteFor(h), id) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// hotOnlyHosts lists the known hosts that no offsite storage receives.
 func hotOnlyHosts(c *config.Config) []string {
 	var out []string
-	for h := range c.Routing {
+	for _, h := range knownHosts(c) {
 		if len(c.ServerOffsiteFor(h)) == 0 {
 			out = append(out, h)
 		}
 	}
-	slices.Sort(out)
 	return out
 }
 

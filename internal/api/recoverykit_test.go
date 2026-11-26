@@ -127,3 +127,29 @@ func TestHandleRecoveryKit(t *testing.T) {
 		t.Fatalf("kit body missing configured repo:\n%s", w.Body.String())
 	}
 }
+
+func TestBuildRecoveryKitListsHostsPerStorage(t *testing.T) {
+	c := testKitConfig() // e2 is the default, box is not
+	c.Clients = map[string]config.Client{"alpha": {}, "beta": {}, "gamma": {}}
+	c.Routing = map[string][]string{"beta": {"box"}, "gamma": {}, "shared": {"box", "e2"}}
+	out := buildRecoveryKit(c, "0.18.0", time.Unix(0, 0).UTC())
+	for _, want := range []string{
+		"Hosts copied to IDrive e2: alpha, shared (and every other host that follows the defaults)",
+		"Hosts copied to Hetzner Box: beta, shared\n",
+		"so they can only be restored from the local repo below: gamma\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("kit missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestBuildRecoveryKitNoDefaultStorage(t *testing.T) {
+	c := testKitConfig()
+	c.Offsite[0].Default = false
+	c.Clients = map[string]config.Client{"alpha": {}}
+	out := buildRecoveryKit(c, "0.18.0", time.Unix(0, 0).UTC())
+	if !strings.Contains(out, "restored from the local repo below: alpha") || !strings.Contains(out, "No storage is a default") {
+		t.Fatalf("host following defaults with none set must be listed as not offsite\n---\n%s", out)
+	}
+}

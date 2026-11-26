@@ -117,8 +117,9 @@ func applyOffsite(c *config.Config, posted []offsitePost) error {
 	for _, o := range c.Offsite {
 		old[o.ID] = o
 	}
-	var list []config.Offsite
+	list := []config.Offsite{} // non-nil: an empty list must be saved as []
 	var ids, labels []string
+	ackReset := false
 	for _, p := range posted {
 		label := strings.TrimSpace(p.Label)
 		switch {
@@ -132,8 +133,12 @@ func applyOffsite(c *config.Config, posted []offsitePost) error {
 		labels = append(labels, strings.ToLower(label))
 		prev, known := old[p.ID]
 		id := p.ID
+		if known && slices.Contains(ids, id) {
+			return fmt.Errorf("offsite storage id %q is used twice", id)
+		}
 		if !known {
-			id = config.NewOffsiteID(label, append(slices.Clone(ids), c.OffsiteIDs()...))
+			taken := append(slices.Clone(ids), c.OffsiteIDs()...)
+			id = config.NewOffsiteID(label, append(taken, c.RetiredOffsite...))
 		}
 		o := config.Offsite{ID: id, Label: label, Default: p.Default, Repo: config.Repo{
 			Repository: p.Repository, S3AccessKeyID: p.S3AccessKeyID,
@@ -146,8 +151,20 @@ func applyOffsite(c *config.Config, posted []offsitePost) error {
 		if known && o.S3SecretAccessKey == "" {
 			o.S3SecretAccessKey = prev.S3SecretAccessKey
 		}
+		// The recovery kit holds the storages' repository and password.
+		if !known || o.Repository != prev.Repository || o.Password != prev.Password {
+			ackReset = true
+		}
 		ids = append(ids, id)
 		list = append(list, o)
+	}
+	if ackReset {
+		c.RecoveryKitAck = false
+	}
+	for _, o := range c.Offsite {
+		if !slices.Contains(ids, o.ID) && !slices.Contains(c.RetiredOffsite, o.ID) {
+			c.RetiredOffsite = append(slices.Clone(c.RetiredOffsite), o.ID)
+		}
 	}
 	c.Offsite = list
 	routing := make(map[string][]string, len(c.Routing))
@@ -206,7 +223,11 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Offsite != nil {
 		probe := *s.cfg.Load()
-		if err := applyOffsite(&probe, *req.Offsite); err != nil {
+		err := applyOffsite(&probe, *req.Offsite)
+		if err == nil {
+			err = probe.Validate()
+		}
+		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -287,15 +308,16 @@ func (s *Server) handleRetentionPreview(w http.ResponseWriter, r *http.Request) 
 		Label     string            `json:"label"`
 		Count     int               `json:"count"`
 		Snapshots []restic.Snapshot `json:"snapshots"`
+		Error     string            `json:"error,omitempty"`
 	}
 	previews := []storagePreview{}
 	for _, o := range s.cfg.Load().Offsite {
 		rm, err := s.offsiteClient(o).ForgetDryRun(ctx, ret)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": o.Label + ": " + err.Error()})
-			return
+		if err != nil { // one unreachable storage must not hide the others
+			previews = append(previews, storagePreview{ID: o.ID, Label: o.Label, Error: err.Error()})
+			continue
 		}
-		previews = append(previews, storagePreview{o.ID, o.Label, len(rm), rm})
+		previews = append(previews, storagePreview{o.ID, o.Label, len(rm), rm, ""})
 	}
 	resp["offsite"] = previews
 	if ret.ApplyToHot {

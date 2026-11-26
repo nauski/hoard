@@ -132,8 +132,10 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		wish := s.store.ClientInfoFor(req.Host).OffsiteWish
-		if req.Offsite != nil {
-			wish = req.Offsite
+		// Only the client itself (or the admin) may choose storages; a host on
+		// the shared repository has no login, so its claim is not trusted.
+		if req.Offsite != nil && (s.isClient(r, req.Host) || s.isAdmin(r)) {
+			wish = cleanWish(s.cfg.Load(), req.Offsite)
 		}
 		s.store.SetClientInfo(req.Host, state.ClientInfo{
 			SeenAt: time.Now(), AgentVersion: req.AgentVersion, Managed: req.Managed,
@@ -150,8 +152,6 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 				MAC: config.SignManaged(cl.Password, req.Host, cl.ManagedVersion, string(raw)),
 			}
 		}
-	}
-	if req.CheckIn {
 		cfg := s.cfg.Load()
 		stores := make([]map[string]string, 0, len(cfg.Offsite))
 		for _, o := range cfg.Offsite {
@@ -161,6 +161,17 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		reply["offsite_server"] = cfg.ServerOffsiteFor(req.Host)
 	}
 	writeJSON(w, http.StatusOK, reply)
+}
+
+// cleanWish keeps the known storage ids once each, at most one per storage.
+func cleanWish(c *config.Config, ids []string) []string {
+	out := []string{}
+	for _, id := range ids {
+		if _, ok := c.OffsiteByID(id); ok && !slices.Contains(out, id) && len(out) < len(c.Offsite) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // handleSetClientOffsite sets which offsite storages a host is mirrored to:

@@ -64,3 +64,27 @@ func TestHandleForecast_EmptyStore(t *testing.T) {
 		t.Fatal("want have_data=false for an empty store")
 	}
 }
+
+func TestHandleForecastLegacyColdGoesToE2(t *testing.T) {
+	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Offsite: []config.Offsite{
+		{ID: "box", Label: "Box", Default: true, Repo: config.Repo{Repository: "r:b"}},
+		{ID: "e2", Label: "e2", Repo: config.Repo{Repository: "s3:x"}},
+	}}, "")
+	st, _ := state.Load("")
+	st.AppendSizeSample(state.SizeSample{At: time.Now().Add(-24 * time.Hour), ColdStored: 7 << 30})
+	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
+	w := httptest.NewRecorder()
+	srv.handleForecast(w, httptest.NewRequest(http.MethodGet, "/api/forecast", nil))
+	var p struct {
+		Offsite []struct {
+			ID     string
+			Stored int64
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Offsite) != 2 || p.Offsite[0].Stored != 0 || p.Offsite[1].Stored != 7<<30 {
+		t.Fatalf("offsite: %+v", p.Offsite)
+	}
+}
