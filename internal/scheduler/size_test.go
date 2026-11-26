@@ -23,7 +23,7 @@ func TestMaybeSampleSizeOncePerDay(t *testing.T) {
 	if samples[0].HotStored <= 0 {
 		t.Fatalf("expected positive hot size, got %+v", samples[0])
 	}
-	if samples[0].ColdStored != 0 {
-		t.Fatalf("expected cold=0 (unconfigured), got %+v", samples[0])
+	if len(samples[0].Offsite) != 0 {
+		t.Fatalf("expected no offsite sizes (unconfigured), got %+v", samples[0])
 	}
 }

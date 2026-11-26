@@ -25,14 +25,14 @@ func TestPerClientRepos(t *testing.T) {
 	dir := t.TempDir()
 	c := &config.Config{
 		Hot:       config.Repo{Repository: filepath.Join(dir, "hot"), Password: "shared"},
-		Cold:      config.Repo{Repository: filepath.Join(dir, "cold"), Password: "cold"},
+		Offsite:   []config.Offsite{{ID: "a", Label: "Alpha", Default: true, Repo: config.Repo{Repository: filepath.Join(dir, "cold"), Password: "cold"}}},
 		Clients:   map[string]config.Client{"vm": {Password: "vm-pw", HTTPPassword: "x"}, "laptop": {Password: "laptop-pw", HTTPPassword: "y"}},
 		Retention: config.Retention{Last: 1, ApplyToHot: true},
-		Mirror:    config.Mirror{ExcludeHosts: []string{"vm"}},
+		Routing:   map[string][]string{"vm": {}},
 	}
 	cfg := config.NewStore(c, "")
 	shared := restic.New("restic", c.Hot)
-	cold := restic.New("restic", c.Cold)
+	cold := restic.New("restic", c.Offsite[0].Repo)
 	vm := restic.New("restic", c.ClientRepo("vm"))
 	laptop := restic.New("restic", c.ClientRepo("laptop"))
 	if err := shared.EnsureInit(ctx); err != nil {

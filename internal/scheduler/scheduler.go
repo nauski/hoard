@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -153,11 +154,18 @@ func (s *Scheduler) Hot() *hot.Set { return s.hot }
 // held by a client backup before giving up.
 const lockWait = "10m"
 
-// hotC / coldC build a restic client from the CURRENT config, so changing the
-// repo/endpoint/credentials in Settings takes effect on the next operation
-// without a restart. restic.New just captures strings, so this is cheap.
-func (s *Scheduler) coldC() *restic.Client {
-	return restic.New(s.resticBin, s.cfg.Load().Cold).WithRetryLock(lockWait)
+// offsiteC builds a restic client for one offsite storage from the CURRENT
+// config, so changing the repo/endpoint/credentials in Settings takes effect
+// on the next operation without a restart. restic.New just captures strings,
+// so this is cheap.
+func (s *Scheduler) offsiteC(o config.Offsite) *restic.Client {
+	return restic.New(s.resticBin, o.Repo).WithRetryLock(lockWait)
+}
+
+// offsiteFor lists the storage ids host is mirrored to: the config routing
+// plus whatever the client itself asked for.
+func (s *Scheduler) offsiteFor(host string) []string {
+	return s.cfg.Load().OffsiteFor(host, s.store.ClientInfoFor(host).OffsiteWish)
 }
 
 // SetNotifier wires the alert sink after construction. This breaks the
@@ -220,8 +228,8 @@ func (s *Scheduler) weekdayOK(now time.Time) bool {
 }
 
 // Mirror applies retention to the hot repo (only when retention.apply_to_hot is
-// set), copies snapshots hot -> cold (minus mirror.exclude_hosts), then applies
-// retention/prune on cold. Hot goes first so the copy cannot re-upload
+// set), then for each offsite storage copies the hosts routed to it and applies
+// retention/prune there. Hot goes first so the copy cannot re-upload
 // snapshots that retention is about to drop.
 func (s *Scheduler) Mirror(ctx context.Context) {
 	if !s.acquire("mirror") {
@@ -246,93 +254,99 @@ func (s *Scheduler) Mirror(ctx context.Context) {
 	}
 	if cfg.Retention.ApplyToHot {
 		for _, k := range keys {
-			if !s.prune(jctx, s.hot.Repo(k), "prune-hot", hot.Label(k)) {
+			if !s.prune(jctx, s.hot.Repo(k), "prune-hot", config.Offsite{}, hot.Label(k)) {
 				return // cancelled
 			}
 		}
 		s.phaseJob("mirror")
 	}
 
+	if len(cfg.Offsite) == 0 {
+		now := time.Now()
+		s.store.RecordJob(state.JobResult{Job: "mirror", StartedAt: now, EndedAt: now, OK: true,
+			Message: "no offsite storage configured"})
+		return
+	}
+	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
+	for _, o := range cfg.Offsite {
+		s.phaseJob("mirror")
+		if !s.mirrorTo(jctx, ctx, keys, o, hooks) {
+			return // cancelled
+		}
+	}
+}
+
+// mirrorTo copies the hosts routed to o from every hot repository into o and
+// applies retention there. It reports false only when the user cancelled. A
+// host list that cannot be read fails the storage rather than falling back to
+// copying everything: a host must never reach a storage it is not routed to.
+func (s *Scheduler) mirrorTo(jctx, ctx context.Context, keys []string, o config.Offsite, hooks restic.StreamHooks) bool {
 	start := time.Now()
-	// Copy each hot repository into the offsite repo. With hot-only hosts
-	// configured, the remaining hosts are copied by name; if a host list cannot
-	// be read, fail rather than fall back to copying everything: a hot-only
-	// host must never reach the offsite repo by accident.
 	var outB strings.Builder
 	var err error
 	copied := 0
-	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
 	for _, k := range keys {
-		if k != hot.Shared && cfg.Mirror.Excludes(k) {
+		var all, hosts []string
+		if all, err = s.hot.Repo(k).Hostnames(jctx); err != nil {
+			break
+		}
+		for _, h := range all {
+			if slices.Contains(s.offsiteFor(h), o.ID) {
+				hosts = append(hosts, h)
+			}
+		}
+		if len(hosts) == 0 {
 			continue
 		}
-		var hosts []string
-		if len(cfg.Mirror.ExcludeHosts) > 0 {
-			var all []string
-			if all, err = s.hot.Repo(k).Hostnames(jctx); err != nil {
-				break
-			}
-			for _, h := range all {
-				if !cfg.Mirror.Excludes(h) {
-					hosts = append(hosts, h)
-				}
-			}
-			if len(hosts) == 0 {
-				continue
-			}
-		}
-		var o string
-		o, err = s.coldC().CopyFrom(jctx, s.hot.RepoConfig(k), hosts, hooks)
-		outB.WriteString(o)
+		var out string
+		out, err = s.offsiteC(o).CopyFrom(jctx, s.hot.RepoConfig(k), hosts, hooks)
+		outB.WriteString(out)
 		copied++
 		if err != nil {
 			break
 		}
 	}
-	if err == nil && copied == 0 {
-		s.store.RecordJob(state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), OK: true,
-			Message: "nothing to mirror: every host is hot-only"})
-		return
-	}
-	out := outB.String()
-	res := state.JobResult{Job: "mirror", StartedAt: start, EndedAt: time.Now(), Output: out}
-	if err != nil {
-		if jctx.Err() == context.Canceled {
-			res.OK = false
-			res.Message = "cancelled"
-			s.log.Info("mirror cancelled")
-			s.store.RecordJob(res)
-			return // skip prune; a user-initiated cancel is not a failure
-		}
-		res.OK = false
-		res.Message = err.Error()
-		s.log.Error("mirror failed", "err", err)
+	res := state.JobResult{Job: "mirror", Target: o.ID, StartedAt: start, EndedAt: time.Now(), Output: outB.String()}
+	switch {
+	case err != nil && jctx.Err() == context.Canceled:
+		res.Message = "cancelled"
+		s.log.Info("mirror cancelled", "storage", o.Label)
 		s.store.RecordJob(res)
-		s.alert("mirror failed", err.Error())
-		return
+		return false // skip prune; a user-initiated cancel is not a failure
+	case err != nil:
+		res.Message = err.Error()
+		s.log.Error("mirror failed", "storage", o.Label, "err", err)
+		s.store.RecordJob(res)
+		s.alert("mirror to "+o.Label+" failed", err.Error())
+		return true
+	case copied == 0:
+		res.OK = true
+		res.Message = "nothing to mirror to " + o.Label
+		s.store.RecordJob(res)
+		return true
 	}
 	res.OK = true
-	res.Message = "snapshots copied to e2"
-	if st, e := s.coldC().Stats(ctx); e == nil {
-		res.Message += " · e2 now " + humanBytes(st.TotalSize)
+	res.Message = "copied to " + o.Label
+	if st, e := s.offsiteC(o).Stats(ctx); e == nil {
+		res.Message += " · now " + humanBytes(st.TotalSize)
 	}
 	s.store.RecordJob(res)
-	s.log.Info("mirror ok")
+	s.log.Info("mirror ok", "storage", o.Label)
 
-	// Retention runs on the cold repo right after a successful copy.
-	if err := s.coldC().Unlock(jctx); err != nil {
-		s.log.Warn("unlock cold repo", "err", err)
+	// Retention runs on the offsite repo right after a successful copy.
+	if err := s.offsiteC(o).Unlock(jctx); err != nil {
+		s.log.Warn("unlock offsite repo", "storage", o.Label, "err", err)
 	}
-	s.prune(jctx, s.coldC(), "prune", "e2")
+	return s.prune(jctx, s.offsiteC(o), "prune", o, o.Label)
 }
 
 // prune applies retention to one repo as job (history name) and reports
 // whether the caller should carry on: false only when the user cancelled.
-func (s *Scheduler) prune(ctx context.Context, cl *restic.Client, job, where string) bool {
+func (s *Scheduler) prune(ctx context.Context, cl *restic.Client, job string, target config.Offsite, where string) bool {
 	s.phaseJob(job)
 	start := time.Now()
 	out, err := cl.ForgetPrune(ctx, s.cfg.Load().Retention, restic.StreamHooks{OnActivity: s.jobLine})
-	res := state.JobResult{Job: job, StartedAt: start, EndedAt: time.Now(), Output: out}
+	res := state.JobResult{Job: job, Target: target.ID, StartedAt: start, EndedAt: time.Now(), Output: out}
 	if err != nil {
 		if ctx.Err() == context.Canceled {
 			res.OK = false
@@ -382,7 +396,7 @@ func humanBytes(b uint64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-// Check verifies cold-repo integrity with a sampled data read.
+// Check verifies the integrity of every offsite storage with a sampled data read.
 func (s *Scheduler) Check(ctx context.Context) {
 	if !s.acquire("check") {
 		return
@@ -394,34 +408,34 @@ func (s *Scheduler) Check(ctx context.Context) {
 	s.beginJob("check", cancel)
 	defer s.endJob()
 
-	start := time.Now()
 	hooks := restic.StreamHooks{OnProgress: s.jobProgress, OnActivity: s.jobLine}
-	// Clear a stale lock first (see Mirror): the check needs the repository,
-	// and a lock left by a crashed job would fail it every time.
-	if err := s.coldC().Unlock(jctx); err != nil {
-		s.log.Warn("unlock cold repo", "err", err)
-	}
-	out, err := s.coldC().Check(jctx, "5%", hooks)
-	res := state.JobResult{Job: "check", StartedAt: start, EndedAt: time.Now(), Output: out}
-	if err != nil {
-		if jctx.Err() == context.Canceled {
-			res.OK = false
-			res.Message = "cancelled"
-			s.log.Info("check cancelled")
-			s.store.RecordJob(res)
-			return
+	for _, o := range s.cfg.Load().Offsite {
+		start := time.Now()
+		// Clear a stale lock first (see Mirror): the check needs the repository,
+		// and a lock left by a crashed job would fail it every time.
+		if err := s.offsiteC(o).Unlock(jctx); err != nil {
+			s.log.Warn("unlock offsite repo", "storage", o.Label, "err", err)
 		}
-		res.OK = false
-		res.Message = err.Error()
-		s.log.Error("check failed", "err", err)
+		out, err := s.offsiteC(o).Check(jctx, "5%", hooks)
+		res := state.JobResult{Job: "check", Target: o.ID, StartedAt: start, EndedAt: time.Now(), Output: out}
+		if err != nil {
+			if jctx.Err() == context.Canceled {
+				res.Message = "cancelled"
+				s.log.Info("check cancelled")
+				s.store.RecordJob(res)
+				return
+			}
+			res.Message = err.Error()
+			s.log.Error("check failed", "storage", o.Label, "err", err)
+			s.store.RecordJob(res)
+			s.alert("integrity check of "+o.Label+" failed", err.Error())
+			continue
+		}
+		res.OK = true
+		res.Message = o.Label + " integrity verified"
 		s.store.RecordJob(res)
-		s.alert("integrity check FAILED", err.Error())
-		return
+		s.log.Info("check ok", "storage", o.Label)
 	}
-	res.OK = true
-	res.Message = "e2 repo integrity verified"
-	s.store.RecordJob(res)
-	s.log.Info("check ok")
 }
 
 // RefreshClients rebuilds per-host freshness from the hot repo's snapshots,
@@ -463,7 +477,7 @@ func (s *Scheduler) RefreshClients(ctx context.Context) {
 			SnapshotID:   sn.ShortID,
 			Paths:        sn.Paths,
 			Size:         size,
-			HotOnly:      cfg.Mirror.Excludes(host),
+			HotOnly:      len(s.offsiteFor(host)) == 0,
 			OwnRepo:      s.hot.KeyForHost(ctx, host) != hot.Shared,
 			Anomaly:      prev.Clients[host].Anomaly,
 		}
@@ -587,7 +601,7 @@ func (s *Scheduler) hold(ctx context.Context, a *state.Anomaly) {
 }
 
 // maybeSampleSize records a repo-size sample at most once per 24h. Hot is
-// required; cold is best-effort (0 if unconfigured/unreachable). Errors
+// required; offsite storages are best-effort. Errors
 // sampling hot are logged and skipped so the tick never wedges.
 func (s *Scheduler) maybeSampleSize(ctx context.Context) {
 	if !forecast.DueForSample(s.store.LastSizeSampleAt(), time.Now(), 24*time.Hour) {
@@ -603,15 +617,19 @@ func (s *Scheduler) maybeSampleSize(ctx context.Context) {
 		hotStored += int64(st.TotalSize)
 	}
 	sample := state.SizeSample{At: time.Now(), HotStored: hotStored}
-	if s.cfg.Load().Cold.Repository != "" {
-		if cold, err := s.coldC().StatsMode(ctx, "raw-data"); err != nil {
-			s.log.Warn("size sample: cold stats failed (recording hot only)", "err", err)
-		} else {
-			sample.ColdStored = int64(cold.TotalSize)
+	for _, o := range s.cfg.Load().Offsite {
+		st, err := s.offsiteC(o).StatsMode(ctx, "raw-data")
+		if err != nil {
+			s.log.Warn("size sample: offsite stats failed (recording without it)", "storage", o.Label, "err", err)
+			continue
 		}
+		if sample.Offsite == nil {
+			sample.Offsite = map[string]int64{}
+		}
+		sample.Offsite[o.ID] = int64(st.TotalSize)
 	}
 	s.store.AppendSizeSample(sample)
-	s.log.Info("recorded size sample", "hot", sample.HotStored, "cold", sample.ColdStored)
+	s.log.Info("recorded size sample", "hot", sample.HotStored, "offsite", sample.Offsite)
 }
 
 func (s *Scheduler) acquire(job string) bool {

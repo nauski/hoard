@@ -52,8 +52,8 @@ func newMirrorScheduler(t *testing.T) *Scheduler {
 	run(coldDir, "init")
 
 	cfg := config.NewStore(&config.Config{
-		Hot:  config.Repo{Repository: hotDir, Password: "test"},
-		Cold: config.Repo{Repository: coldDir, Password: "test"},
+		Hot:     config.Repo{Repository: hotDir, Password: "test"},
+		Offsite: []config.Offsite{{ID: "a", Label: "Alpha", Default: true, Repo: config.Repo{Repository: coldDir, Password: "test"}}},
 	}, "")
 	st, _ := state.Load("")
 	return New(cfg, "restic", st, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -180,7 +180,7 @@ func TestCancelMirrorRecordsNoAlert(t *testing.T) {
 		t.Fatal("cancelled mirror did not finish in time")
 	}
 
-	last := s.store.Snapshot().LastByJob["mirror"]
+	last := s.store.Snapshot().LastByJob["mirror@a"]
 	if last.OK {
 		t.Fatalf("expected cancelled mirror to record OK=false, got %+v", last)
 	}

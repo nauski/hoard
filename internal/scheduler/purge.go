@@ -10,10 +10,10 @@ import (
 )
 
 // PurgePath removes targetPath (a file or folder, and everything under it) from
-// EVERY snapshot of host, in BOTH the hot and cold (e2) repos, then prunes both
-// to actually reclaim space. Running on both repos is what makes the deletion
-// stick: purging only cold would let the next mirror re-copy the path from hot;
-// purging only hot would leave the data occupying e2. Serialized against the
+// EVERY snapshot of host, in the hot repo AND every offsite storage, then
+// prunes them to actually reclaim space. Running everywhere is what makes the
+// deletion stick: purging only offsite would let the next mirror re-copy the
+// path from hot; purging only hot would leave the data occupying the storage. Serialized against the
 // scheduler's other jobs.
 func (s *Scheduler) PurgePath(ctx context.Context, host, targetPath string) error {
 	if strings.TrimSpace(targetPath) == "" {
@@ -35,7 +35,7 @@ func (s *Scheduler) PurgePath(ctx context.Context, host, targetPath string) erro
 		return err
 	}
 
-	// Hot first (the source of truth), then cold (e2).
+	// Hot first (the source of truth), then each offsite storage.
 	hotRepo := s.hot.ForHost(ctx, host)
 	_ = hotRepo.Unlock(ctx)
 	if err := run("rewrite hot", func() (string, error) { return hotRepo.RewriteExcludePath(ctx, host, targetPath) }); err != nil {
@@ -44,16 +44,19 @@ func (s *Scheduler) PurgePath(ctx context.Context, host, targetPath string) erro
 	if err := run("prune hot", func() (string, error) { return hotRepo.Prune(ctx) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "hot prune failed")
 	}
-	_ = s.coldC().Unlock(ctx)
-	if err := run("rewrite cold(e2)", func() (string, error) { return s.coldC().RewriteExcludePath(ctx, host, targetPath) }); err != nil {
-		return s.finishPurge(start, b.String(), err, "cold rewrite failed")
-	}
-	if err := run("prune cold(e2)", func() (string, error) { return s.coldC().Prune(ctx) }); err != nil {
-		return s.finishPurge(start, b.String(), err, "cold prune failed")
+	for _, o := range s.cfg.Load().Offsite {
+		cl := s.offsiteC(o)
+		_ = cl.Unlock(ctx)
+		if err := run("rewrite "+o.Label, func() (string, error) { return cl.RewriteExcludePath(ctx, host, targetPath) }); err != nil {
+			return s.finishPurge(start, b.String(), err, o.Label+" rewrite failed")
+		}
+		if err := run("prune "+o.Label, func() (string, error) { return cl.Prune(ctx) }); err != nil {
+			return s.finishPurge(start, b.String(), err, o.Label+" prune failed")
+		}
 	}
 
 	err := s.finishPurge(start, b.String(), nil,
-		fmt.Sprintf("purged %q from all versions of %s (hot + e2)", targetPath, host))
+		fmt.Sprintf("purged %q from all versions of %s (hot + offsite)", targetPath, host))
 	s.RefreshClients(ctx)
 	return err
 }
@@ -102,14 +105,19 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 	}
 
 	if !when.IsZero() {
-		if coldSnaps, err := s.coldC().Snapshots(ctx); err == nil {
-			for _, cs := range coldSnaps {
+		for _, st := range s.cfg.Load().Offsite {
+			cl := s.offsiteC(st)
+			snaps, err := cl.Snapshots(ctx)
+			if err != nil {
+				continue
+			}
+			for _, cs := range snaps {
 				if cs.Hostname == host && cs.Time.Equal(when) {
-					_ = s.coldC().Unlock(ctx)
-					o, e := s.coldC().RewriteExcludePathSnap(ctx, cs.ID, targetPath)
-					fmt.Fprintf(&b, "== rewrite cold twin %s ==\n%s\n", cs.ShortID, strings.TrimSpace(o))
+					_ = cl.Unlock(ctx)
+					o, e := cl.RewriteExcludePathSnap(ctx, cs.ID, targetPath)
+					fmt.Fprintf(&b, "== rewrite %s ==\n%s\n", st.Label, strings.TrimSpace(o))
 					if e == nil {
-						_, _ = s.coldC().Prune(ctx)
+						_, _ = cl.Prune(ctx)
 					}
 					break
 				}
@@ -118,7 +126,7 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 	}
 
 	err = s.finishPurge(start, b.String(), nil,
-		fmt.Sprintf("removed %q from version %s (hot + e2 twin)", targetPath, hotSnapID))
+		fmt.Sprintf("removed %q from version %s (hot + offsite twins)", targetPath, hotSnapID))
 	s.RefreshClients(ctx)
 	return err
 }
@@ -168,16 +176,21 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 		fmt.Fprintf(&b, "prune hot error: %v\n", err)
 	}
 
-	// Best-effort: forget the cold twin.
+	// Best-effort: forget the twin on every offsite storage.
 	if target != nil {
-		if coldSnaps, err := s.coldC().Snapshots(ctx); err == nil {
-			for _, cs := range coldSnaps {
+		for _, st := range s.cfg.Load().Offsite {
+			cl := s.offsiteC(st)
+			snaps, err := cl.Snapshots(ctx)
+			if err != nil {
+				continue
+			}
+			for _, cs := range snaps {
 				if cs.Hostname == target.host && cs.Time.Equal(target.t) {
-					_ = s.coldC().Unlock(ctx)
-					o, e := s.coldC().ForgetSnapshot(ctx, cs.ID)
-					fmt.Fprintf(&b, "== forget cold twin %s ==\n%s\n", cs.ShortID, strings.TrimSpace(o))
+					_ = cl.Unlock(ctx)
+					o, e := cl.ForgetSnapshot(ctx, cs.ID)
+					fmt.Fprintf(&b, "== forget twin on %s ==\n%s\n", st.Label, strings.TrimSpace(o))
 					if e == nil {
-						_, _ = s.coldC().Prune(ctx)
+						_, _ = cl.Prune(ctx)
 					}
 					break
 				}
@@ -185,7 +198,7 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 		}
 	}
 
-	err = s.finishDelete(start, b.String(), nil, "deleted version "+hotSnapID+" (hot + e2 twin)")
+	err = s.finishDelete(start, b.String(), nil, "deleted version "+hotSnapID+" (hot + offsite twins)")
 	s.RefreshClients(ctx)
 	return err
 }

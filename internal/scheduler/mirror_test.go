@@ -53,9 +53,9 @@ func TestMirrorHotOnlyAndHotRetention(t *testing.T) {
 	}
 
 	cfg := config.NewStore(&config.Config{
-		Hot: hotRepo, Cold: coldRepo,
+		Hot: hotRepo, Offsite: []config.Offsite{{ID: "a", Label: "Alpha", Default: true, Repo: coldRepo}},
 		Retention: config.Retention{Last: 1, Hosts: map[string]config.Retention{"vm": {Last: 2}}},
-		Mirror:    config.Mirror{ExcludeHosts: []string{"vm"}},
+		Routing:   map[string][]string{"vm": {}},
 	}, "")
 	st, _ := state.Load("")
 	s := New(cfg, "restic", st, slog.New(slog.NewTextHandler(os.Stderr, nil)))
