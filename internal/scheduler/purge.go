@@ -44,25 +44,27 @@ func (s *Scheduler) PurgePath(ctx context.Context, host, targetPath string) erro
 	if err := run("prune hot", func() (string, error) { return hotRepo.Prune(ctx) }); err != nil {
 		return s.finishPurge(start, b.String(), err, "hot prune failed")
 	}
+	var failed []string
 	for _, o := range s.cfg.Load().Offsite {
 		cl := s.offsiteC(o)
 		_ = cl.Unlock(ctx)
 		if err := run("rewrite "+o.Label, func() (string, error) { return cl.RewriteExcludePath(ctx, host, targetPath) }); err != nil {
-			return s.finishPurge(start, b.String(), err, o.Label+" rewrite failed")
+			failed = append(failed, o.Label)
+			continue
 		}
 		if err := run("prune "+o.Label, func() (string, error) { return cl.Prune(ctx) }); err != nil {
-			return s.finishPurge(start, b.String(), err, o.Label+" prune failed")
+			failed = append(failed, o.Label)
 		}
 	}
 
-	err := s.finishPurge(start, b.String(), nil,
-		fmt.Sprintf("purged %q from all versions of %s (hot + offsite)", targetPath, host))
+	err := s.finishPurge(start, b.String(), failedErr(failed),
+		doneMsg(failed, fmt.Sprintf("purged %q from all versions of %s (hot + offsite)", targetPath, host)))
 	s.RefreshClients(ctx)
 	return err
 }
 
 // PurgePathInVersion removes targetPath from a single version (hotSnapID) and
-// its cold twin, then prunes both. Use this for "delete from this version only";
+// its twin on every offsite storage, then prunes them. Use this for "delete from this version only";
 // PurgePath is the "all versions" variant.
 func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPath string) error {
 	if strings.TrimSpace(targetPath) == "" || hotSnapID == "" {
@@ -76,7 +78,7 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 	start := time.Now()
 	var b strings.Builder
 
-	// Look up host+time to find the cold twin.
+	// Look up host+time to find the offsite twin.
 	hotSnaps, err := s.hot.Snapshots(ctx)
 	if err != nil {
 		return s.finishPurge(start, "", err, "list hot snapshots failed")
@@ -104,11 +106,14 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 		fmt.Fprintf(&b, "prune hot error: %v\n", err)
 	}
 
+	var failed []string
 	if !when.IsZero() {
 		for _, st := range s.cfg.Load().Offsite {
 			cl := s.offsiteC(st)
 			snaps, err := cl.Snapshots(ctx)
 			if err != nil {
+				fmt.Fprintf(&b, "== list %s ==\nERROR: %v\n", st.Label, err)
+				failed = append(failed, st.Label)
 				continue
 			}
 			for _, cs := range snaps {
@@ -117,7 +122,11 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 					o, e := cl.RewriteExcludePathSnap(ctx, cs.ID, targetPath)
 					fmt.Fprintf(&b, "== rewrite %s ==\n%s\n", st.Label, strings.TrimSpace(o))
 					if e == nil {
-						_, _ = cl.Prune(ctx)
+						_, e = cl.Prune(ctx)
+					}
+					if e != nil {
+						fmt.Fprintf(&b, "ERROR: %v\n", e)
+						failed = append(failed, st.Label)
 					}
 					break
 				}
@@ -125,14 +134,14 @@ func (s *Scheduler) PurgePathInVersion(ctx context.Context, hotSnapID, targetPat
 		}
 	}
 
-	err = s.finishPurge(start, b.String(), nil,
-		fmt.Sprintf("removed %q from version %s (hot + offsite twins)", targetPath, hotSnapID))
+	err = s.finishPurge(start, b.String(), failedErr(failed),
+		doneMsg(failed, fmt.Sprintf("removed %q from version %s (hot + offsite twins)", targetPath, hotSnapID)))
 	s.RefreshClients(ctx)
 	return err
 }
 
 // DeleteSnapshot deletes one whole version. It removes the hot snapshot by ID
-// and the matching cold snapshot (same host + timestamp, which restic copy
+// and the matching offsite snapshot (same host + timestamp, which restic copy
 // preserves), then prunes both.
 func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error {
 	if !s.acquire("delete-version") {
@@ -143,7 +152,7 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 	start := time.Now()
 	var b strings.Builder
 
-	// Identify the hot snapshot so we can find its cold twin by host+time.
+	// Identify the hot snapshot so we can find its offsite twin by host+time.
 	hotSnaps, err := s.hot.Snapshots(ctx)
 	if err != nil {
 		return s.finishDelete(start, "", err, "list hot snapshots failed")
@@ -176,12 +185,15 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 		fmt.Fprintf(&b, "prune hot error: %v\n", err)
 	}
 
-	// Best-effort: forget the twin on every offsite storage.
+	// Forget the twin on every offsite storage; remember which ones failed.
+	var failed []string
 	if target != nil {
 		for _, st := range s.cfg.Load().Offsite {
 			cl := s.offsiteC(st)
 			snaps, err := cl.Snapshots(ctx)
 			if err != nil {
+				fmt.Fprintf(&b, "== list %s ==\nERROR: %v\n", st.Label, err)
+				failed = append(failed, st.Label)
 				continue
 			}
 			for _, cs := range snaps {
@@ -190,7 +202,11 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 					o, e := cl.ForgetSnapshot(ctx, cs.ID)
 					fmt.Fprintf(&b, "== forget twin on %s ==\n%s\n", st.Label, strings.TrimSpace(o))
 					if e == nil {
-						_, _ = cl.Prune(ctx)
+						_, e = cl.Prune(ctx)
+					}
+					if e != nil {
+						fmt.Fprintf(&b, "ERROR: %v\n", e)
+						failed = append(failed, st.Label)
 					}
 					break
 				}
@@ -198,9 +214,27 @@ func (s *Scheduler) DeleteSnapshot(ctx context.Context, hotSnapID string) error 
 		}
 	}
 
-	err = s.finishDelete(start, b.String(), nil, "deleted version "+hotSnapID+" (hot + offsite twins)")
+	err = s.finishDelete(start, b.String(), failedErr(failed),
+		doneMsg(failed, "deleted version "+hotSnapID+" (hot + offsite twins)"))
 	s.RefreshClients(ctx)
 	return err
+}
+
+// failedErr is nil when no storage failed, else an error naming them.
+func failedErr(labels []string) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	return fmt.Errorf("failed on %s", strings.Join(labels, ", "))
+}
+
+// doneMsg is the success message, or "incomplete" when a storage failed (the
+// error then names the storages).
+func doneMsg(failed []string, ok string) string {
+	if len(failed) > 0 {
+		return "incomplete"
+	}
+	return ok
 }
 
 func (s *Scheduler) finishPurge(start time.Time, output string, err error, okMsg string) error {
@@ -224,6 +258,7 @@ func (s *Scheduler) finishDelete(start time.Time, output string, err error, okMs
 		res.OK = false
 		res.Message = okMsg + ": " + err.Error()
 		s.store.RecordJob(res)
+		s.alert("delete version failed", res.Message)
 		return err
 	}
 	res.OK = true

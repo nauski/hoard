@@ -15,8 +15,9 @@ import (
 )
 
 // fakeRestic writes a restic stand-in that logs "<RESTIC_REPOSITORY> <args>"
-// per call. The hot repo reports hosts h1 and h2; `copy` fails when the
-// destination is $FAIL_REPO. Returns a scheduler over storages a (default) and
+// per call. The hot repo reports hosts h1 and h2; `copy`, `rewrite`, `forget` and `prune`
+// fail on $FAIL_REPO, `snapshots` on $FAIL_SNAP_REPO; a storage lists a twin of
+// h1's snapshot when $TWIN is set. Returns a scheduler over storages a (default) and
 // b, and a func returning the logged lines.
 func fakeRestic(t *testing.T, offsite ...string) (*Scheduler, func() []string) {
 	t.Helper()
@@ -26,9 +27,13 @@ func fakeRestic(t *testing.T, offsite ...string) (*Scheduler, func() []string) {
 echo "$RESTIC_REPOSITORY $*" >> ` + logf + `
 case " $* " in
 *" snapshots "*)
+  [ "$RESTIC_REPOSITORY" = "$FAIL_SNAP_REPO" ] && { echo boom >&2; exit 1; }
   if [ "$RESTIC_REPOSITORY" = /hot ]; then
     echo '[{"id":"a1","short_id":"a1","hostname":"h1","time":"2026-01-01T00:00:00Z"},{"id":"b1","short_id":"b1","hostname":"h2","time":"2026-01-01T00:00:00Z"}]'
+  elif [ -n "$TWIN" ]; then
+    echo '[{"id":"t1","short_id":"t1","hostname":"h1","time":"2026-01-01T00:00:00Z"}]'
   else echo '[]'; fi ;;
+*" rewrite "*|*" forget "*|*" prune "*) [ "$RESTIC_REPOSITORY" = "$FAIL_REPO" ] && { echo boom >&2; exit 1; } ;;
 *" stats "*) echo '{"total_size":5}' ;;
 *" copy "*) [ "$RESTIC_REPOSITORY" = "$FAIL_REPO" ] && { echo boom >&2; exit 1; } ;;
 esac
@@ -147,5 +152,72 @@ func TestNoStorageMirrorIsOK(t *testing.T) {
 	m := s.store.Snapshot().LastByJob["mirror"]
 	if !m.OK || m.Message != "no offsite storage configured" || note.count() != 0 {
 		t.Fatalf("mirror = %+v, alerts %v", m, note.calls)
+	}
+}
+
+func TestPurgeContinuesAfterOneStorageFails(t *testing.T) {
+	t.Setenv("FAIL_REPO", "/a")
+	s, lines := fakeRestic(t, "a", "b")
+	note := &recordingNotifier{}
+	s.SetNotifier(note)
+	if err := s.PurgePath(context.Background(), "h1", "/secret"); err == nil {
+		t.Fatal("want an error when a storage failed")
+	}
+	if !slices.ContainsFunc(lines(), func(l string) bool { return strings.HasPrefix(l, "/b ") && strings.Contains(l, " rewrite ") }) {
+		t.Error("storage b was skipped after a failed")
+	}
+	p := s.store.Snapshot().LastByJob["purge"]
+	if p.OK || !strings.Contains(p.Message, "A storage") || strings.Contains(p.Message, "B storage") {
+		t.Fatalf("purge = %+v, want not OK naming only A storage", p)
+	}
+	if note.count() != 1 {
+		t.Errorf("alerts = %v", note.calls)
+	}
+}
+
+func TestDeleteSnapshotFailsWhenStorageListingFails(t *testing.T) {
+	t.Setenv("TWIN", "1")
+	t.Setenv("FAIL_SNAP_REPO", "/a")
+	s, lines := fakeRestic(t, "a", "b")
+	if err := s.DeleteSnapshot(context.Background(), "a1"); err == nil {
+		t.Fatal("want an error when a storage could not be reached")
+	}
+	if !slices.ContainsFunc(lines(), func(l string) bool { return strings.HasPrefix(l, "/b ") && strings.Contains(l, " forget ") }) {
+		t.Error("twin on b was not forgotten")
+	}
+	d := s.store.Snapshot().LastByJob["delete-version"]
+	if d.OK || !strings.Contains(d.Message, "A storage") {
+		t.Fatalf("delete = %+v", d)
+	}
+}
+
+func TestPurgeInVersionReportsFailedStorage(t *testing.T) {
+	t.Setenv("TWIN", "1")
+	t.Setenv("FAIL_REPO", "/a")
+	s, lines := fakeRestic(t, "a", "b")
+	if err := s.PurgePathInVersion(context.Background(), "a1", "/secret"); err == nil {
+		t.Fatal("want an error when a rewrite failed")
+	}
+	if !slices.ContainsFunc(lines(), func(l string) bool { return strings.HasPrefix(l, "/b ") && strings.Contains(l, " rewrite ") }) {
+		t.Error("b was skipped")
+	}
+	p := s.store.Snapshot().LastByJob["purge"]
+	if p.OK || !strings.Contains(p.Message, "A storage") {
+		t.Fatalf("purge = %+v", p)
+	}
+}
+
+func TestMirrorHostListErrorCopiesNothing(t *testing.T) {
+	t.Setenv("FAIL_SNAP_REPO", "/hot")
+	s, lines := fakeRestic(t, "a", "b")
+	s.Mirror(context.Background())
+	for _, l := range lines() {
+		if strings.Contains(l, " copy ") {
+			t.Errorf("copied despite host list error: %s", l)
+		}
+	}
+	last := s.store.Snapshot().LastByJob
+	if last["mirror@a"].OK || last["mirror@b"].OK || last["mirror@a"].Message == "" {
+		t.Fatalf("mirror@a = %+v, mirror@b = %+v", last["mirror@a"], last["mirror@b"])
 	}
 }
