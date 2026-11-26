@@ -23,8 +23,16 @@ func TestProjectLinearGrowth(t *testing.T) {
 	if d := p.HotPerDay - (1 << 30); d > (1<<30)/100 || d < -(1<<30)/100 {
 		t.Fatalf("hot/day: got %d", p.HotPerDay)
 	}
-	if d := p.ColdPerDay - (2 << 30); d > (2<<30)/100 || d < -(2<<30)/100 {
-		t.Fatalf("cold/day: got %d", p.ColdPerDay)
+	c := ProjectStorage(s, "e2", true, 90*24*time.Hour)
+	if d := c.PerDay - (2 << 30); d > (2<<30)/100 || d < -(2<<30)/100 {
+		t.Fatalf("cold/day: got %d", c.PerDay)
+	}
+	if c.Stored != 20<<30 {
+		t.Fatalf("stored: got %d", c.Stored)
+	}
+	// a storage that is not first gets nothing from old cold_stored samples
+	if o := ProjectStorage(s, "other", false, 90*24*time.Hour); o.Stored != 0 || o.PerDay != 0 {
+		t.Fatalf("second storage must not inherit cold_stored: %+v", o)
 	}
 	// +90d from last (10 GiB) ≈ 100 GiB hot
 	want := int64(100) << 30
@@ -81,9 +89,19 @@ func TestColdIgnoresLeadingZeros(t *testing.T) {
 		{At: day(3), HotStored: 4 << 30, ColdStored: 10 << 30},
 		{At: day(5), HotStored: 6 << 30, ColdStored: 14 << 30},
 	}
-	p := Project(s, 90*24*time.Hour, day(5))
-	if p.ColdPerDay != (2 << 30) { // (14-10)/(5-3) = 2 GiB/day
-		t.Fatalf("cold/day ignoring zeros: got %d want %d", p.ColdPerDay, 2<<30)
+	p := ProjectStorage(s, "e2", true, 90*24*time.Hour)
+	if p.PerDay != (2 << 30) { // (14-10)/(5-3) = 2 GiB/day
+		t.Fatalf("cold/day ignoring zeros: got %d want %d", p.PerDay, 2<<30)
+	}
+}
+
+func TestProjectStoragePerStorageSizes(t *testing.T) {
+	var s []state.SizeSample
+	for i := 0; i <= 4; i++ {
+		s = append(s, state.SizeSample{At: day(i), Offsite: map[string]int64{"a": int64(i) << 30, "b": int64(3*i) << 30}})
+	}
+	if p := ProjectStorage(s, "b", false, 90*24*time.Hour); p.PerDay != 3<<30 || p.Stored != 12<<30 {
+		t.Fatalf("b: %+v", p)
 	}
 }
 

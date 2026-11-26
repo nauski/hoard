@@ -48,7 +48,7 @@ func New(cfg *config.Store, resticBin string, sched *scheduler.Scheduler, store 
 	}
 }
 
-// hot / cold build a restic client from the current config so repo/endpoint/
+// hot / offsite build a restic client from the current config so repo/endpoint/
 // credential changes in Settings apply without a restart.
 // lockWait: see scheduler.lockWait. Handlers are also bounded by their own
 // request timeouts.
@@ -56,8 +56,17 @@ const lockWait = "10m"
 
 // hot is the hot storage: the shared repo plus per-client repos.
 func (s *Server) hot() *hot.Set { return s.sched.Hot() }
-func (s *Server) cold() *restic.Client {
-	return restic.New(s.resticBin, s.cfg.Load().Cold).WithRetryLock(lockWait)
+func (s *Server) offsiteClient(o config.Offsite) *restic.Client {
+	return restic.New(s.resticBin, o.Repo).WithRetryLock(lockWait)
+}
+
+// offsite looks up a storage by id in the current config.
+func (s *Server) offsite(id string) (*restic.Client, config.Offsite, bool) {
+	o, ok := s.cfg.Load().OffsiteByID(id)
+	if !ok {
+		return nil, o, false
+	}
+	return s.offsiteClient(o), o, true
 }
 
 // Handler returns the root mux (dashboard + /api routes).
@@ -66,8 +75,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleSetConfig)
-	mux.HandleFunc("POST /api/config/test-cold", s.handleTestCold)
-	mux.HandleFunc("POST /api/config/init-cold", s.handleInitCold)
+	mux.HandleFunc("POST /api/config/test-offsite", s.handleTestOffsite)
+	mux.HandleFunc("POST /api/config/init-offsite", s.handleInitOffsite)
 	mux.HandleFunc("POST /api/config/retention-preview", s.handleRetentionPreview)
 	mux.HandleFunc("POST /api/config/test-email", s.handleTestEmail)
 	mux.HandleFunc("POST /api/config/ack-kit", s.handleAckKit)
@@ -79,7 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/actions/mirror", s.action("mirror"))
 	mux.HandleFunc("POST /api/actions/check", s.action("check"))
 	mux.HandleFunc("POST /api/actions/cancel", s.handleCancel)
-	// Backup browser (reads the fast hot repo; deletes hit hot + cold).
+	// Backup browser (reads the fast hot repo; deletes hit hot + offsite).
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("GET /api/forecast", s.handleForecast)
 	mux.HandleFunc("GET /api/ls", s.handleLs)
@@ -97,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/clients/control", s.handleClientControl)
 	mux.HandleFunc("GET /api/clients/config", s.handleClientConfig)
 	mux.HandleFunc("POST /api/clients/config", s.handleSetClientConfig)
+	mux.HandleFunc("POST /api/clients/offsite", s.handleSetClientOffsite)
 	mux.HandleFunc("POST /api/clients/backup", s.handleClientBackup)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -110,9 +120,9 @@ type statusResponse struct {
 	Version    string                     `json:"version"`
 	Now        time.Time                  `json:"now"`
 	Running    string                     `json:"running"`
-	Clients    map[string]state.Client    `json:"clients"`
+	Clients    map[string]statusClient    `json:"clients"`
 	Jobs       map[string]state.JobResult `json:"jobs"`
-	ColdRepo   string                     `json:"cold_repo"`
+	Offsite    []offsiteStatus            `json:"offsite"`
 	HotRepo    string                     `json:"hot_repo"`
 	LastVerify *state.VerifyResult        `json:"last_verify,omitempty"`
 	Outcomes   map[string]state.Outcome   `json:"outcomes"`
@@ -121,6 +131,22 @@ type statusResponse struct {
 	// is true when clients enroll into their own repositories.
 	AuthEnabled  bool `json:"auth_enabled"`
 	PrivateRepos bool `json:"private_repos"`
+}
+
+type offsiteStatus struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	Repository string `json:"repository"`
+}
+
+// statusClient is a client plus where its snapshots go offsite: Offsite is the
+// effective list, OffsiteServer the server-side routing entry (nil while the
+// defaults apply), OffsiteWish what the client itself asked for.
+type statusClient struct {
+	state.Client
+	Offsite       []string `json:"offsite"`
+	OffsiteServer []string `json:"offsite_server"`
+	OffsiteWish   []string `json:"offsite_wish"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +162,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Load()
 	for name := range cfg.Clients {
 		if _, ok := clients[name]; !ok {
-			clients[name] = state.Client{Hostname: name, OwnRepo: true, HotOnly: cfg.Mirror.Excludes(name)}
+			clients[name] = state.Client{Hostname: name, OwnRepo: true, HotOnly: len(cfg.ServerOffsiteFor(name)) == 0}
 		}
 	}
 	// Mark the ones reporting a backup or restore right now.
@@ -161,13 +187,26 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			clients[h] = c
 		}
 	}
+	view := make(map[string]statusClient, len(clients))
+	for h, c := range clients {
+		wish := s.store.ClientInfoFor(h).OffsiteWish
+		sc := statusClient{Client: c, Offsite: cfg.OffsiteFor(h, wish), OffsiteWish: wish}
+		if routed, ok := cfg.Routing[h]; ok {
+			sc.OffsiteServer = append([]string{}, routed...)
+		}
+		view[h] = sc
+	}
+	stores := make([]offsiteStatus, 0, len(cfg.Offsite))
+	for _, o := range cfg.Offsite {
+		stores = append(stores, offsiteStatus{o.ID, o.Label, redact(o.Repository)})
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		Version:    version.Version,
 		Now:        now,
 		Running:    s.sched.Running(),
-		Clients:    clients,
+		Clients:    view,
 		Jobs:       snap.LastByJob,
-		ColdRepo:   redact(s.cfg.Load().Cold.Repository),
+		Offsite:    stores,
 		HotRepo:    s.cfg.Load().Hot.Repository,
 		LastVerify: snap.LastVerify,
 		Outcomes:   snap.ClientOutcomes,
@@ -259,13 +298,13 @@ func (s *Server) postWebhook(ctx context.Context, url, title, body string) {
 }
 
 // handleStats returns repository storage totals (deduplicated raw-data size)
-// for the hot and cold repos, along with logical (restore-size) for dedup ratio.
+// for the hot repos and every offsite storage (keyed by id), along with logical (restore-size) for dedup ratio.
 // Somewhat expensive (reads the index), so the UI calls it infrequently.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	out := map[string]any{}
-	add := func(key string, c *restic.Client) {
+	add := func(key, label string, c *restic.Client) {
 		st, err := c.StatsMode(ctx, "raw-data")
 		if err != nil {
 			return
@@ -273,7 +312,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if lg, err := c.StatsMode(ctx, "restore-size"); err == nil {
 			st.LogicalSize = lg.TotalSize
 		}
-		out[key] = st
+		out[key] = struct {
+			*restic.Stats
+			Label string `json:"label"`
+		}{st, label}
 	}
 	// Hot is the sum over the shared repo and every client's own repo.
 	var hotTotal restic.Stats
@@ -294,15 +336,30 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if hotOK {
 		out["hot"] = &hotTotal
 	}
-	add("cold", s.cold())
+	for _, o := range s.cfg.Load().Offsite {
+		add(o.ID, o.Label, s.offsiteClient(o))
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // handleForecast projects repo-size growth 90 days out from recorded size
 // samples. Cheap (in-memory), so the UI can call it freely.
 func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
-	p := forecast.Project(s.store.SizeSamplesSnapshot(), 90*24*time.Hour, time.Now())
-	writeJSON(w, http.StatusOK, p)
+	samples := s.store.SizeSamplesSnapshot()
+	const horizon = 90 * 24 * time.Hour
+	type storageForecast struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+		forecast.Storage
+	}
+	stores := []storageForecast{}
+	for i, o := range s.cfg.Load().Offsite {
+		stores = append(stores, storageForecast{o.ID, o.Label, forecast.ProjectStorage(samples, o.ID, i == 0, horizon)})
+	}
+	writeJSON(w, http.StatusOK, struct {
+		forecast.Projection
+		Offsite []storageForecast `json:"offsite"`
+	}{forecast.Project(samples, horizon, time.Now()), stores})
 }
 
 // handleLs lists one directory level inside a snapshot (hot repo).
@@ -380,7 +437,7 @@ type purgeRequest struct {
 }
 
 // handlePurge removes a path from either one version (if version is set) or all
-// versions of a host, across hot + cold.
+// versions of a host, across hot + offsite.
 func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
 	var req purgeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
@@ -401,7 +458,7 @@ func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "path": req.Path})
 }
 
-// handleDeleteVersion deletes one whole snapshot (hot + cold twin).
+// handleDeleteVersion deletes one whole snapshot (hot + offsite twins).
 func (s *Server) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`

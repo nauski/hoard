@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,27 +35,38 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	b.WriteString("These are stock-restic instructions: they need no hoard, just the\n")
 	fmt.Fprintf(&b, "restic %s binary (https://github.com/restic/restic/releases).\n\n", resticVer)
 
-	b.WriteString("==================================================================\n")
-	b.WriteString("PRIMARY — OFFSITE (cold / S3). Use this if the NAS is gone.\n")
-	b.WriteString("==================================================================\n")
-	fmt.Fprintf(&b, "Repository          : %s\n", val(c.Cold.Repository))
-	fmt.Fprintf(&b, "Repo password       : %s\n", val(c.Cold.Password))
-	fmt.Fprintf(&b, "S3 Access Key ID    : %s\n", val(c.Cold.S3AccessKeyID))
-	fmt.Fprintf(&b, "S3 Secret Access Key: %s\n\n", val(c.Cold.S3SecretAccessKey))
-	b.WriteString("Restore (paste into a shell with restic installed):\n")
-	if strings.TrimSpace(c.Cold.Repository) == "" {
-		b.WriteString("  (offsite repo not configured — nothing to restore from here)\n\n")
-	} else {
-		fmt.Fprintf(&b, "  export RESTIC_REPOSITORY='%s'\n", c.Cold.Repository)
-		fmt.Fprintf(&b, "  export RESTIC_PASSWORD='%s'\n", c.Cold.Password)
-		fmt.Fprintf(&b, "  export AWS_ACCESS_KEY_ID='%s'\n", c.Cold.S3AccessKeyID)
-		fmt.Fprintf(&b, "  export AWS_SECRET_ACCESS_KEY='%s'\n", c.Cold.S3SecretAccessKey)
-		b.WriteString("  restic snapshots                      # list what's there\n")
-		b.WriteString("  restic restore latest --target ./restored\n\n")
+	if len(c.Offsite) == 0 {
+		b.WriteString("==================================================================\n")
+		b.WriteString("PRIMARY — OFFSITE. Use this if the NAS is gone.\n")
+		b.WriteString("==================================================================\n")
+		b.WriteString("  (offsite storage not configured — nothing to restore from here)\n\n")
 	}
-	if len(c.Mirror.ExcludeHosts) > 0 {
+	for _, o := range c.Offsite {
+		b.WriteString("==================================================================\n")
+		fmt.Fprintf(&b, "PRIMARY — OFFSITE: %s. Use this if the NAS is gone.\n", o.Label)
+		b.WriteString("==================================================================\n")
+		fmt.Fprintf(&b, "Repository          : %s\n", val(o.Repository))
+		fmt.Fprintf(&b, "Repo password       : %s\n", val(o.Password))
+		if o.S3AccessKeyID != "" || o.S3SecretAccessKey != "" {
+			fmt.Fprintf(&b, "S3 Access Key ID    : %s\n", val(o.S3AccessKeyID))
+			fmt.Fprintf(&b, "S3 Secret Access Key: %s\n", val(o.S3SecretAccessKey))
+		}
+		b.WriteString("\nRestore (paste into a shell with restic installed):\n")
+		if strings.TrimSpace(o.Repository) == "" {
+			b.WriteString("  (repository not configured — nothing to restore from here)\n\n")
+			continue
+		}
+		fmt.Fprintf(&b, "  export RESTIC_PASSWORD='%s'\n", o.Password)
+		if o.S3AccessKeyID != "" || o.S3SecretAccessKey != "" {
+			fmt.Fprintf(&b, "  export AWS_ACCESS_KEY_ID='%s'\n", o.S3AccessKeyID)
+			fmt.Fprintf(&b, "  export AWS_SECRET_ACCESS_KEY='%s'\n", o.S3SecretAccessKey)
+		}
+		fmt.Fprintf(&b, "  restic -r '%s' snapshots              # list what's there\n", o.Repository)
+		fmt.Fprintf(&b, "  restic -r '%s' restore latest --target ./restored\n\n", o.Repository)
+	}
+	if hotOnly := hotOnlyHosts(c); len(hotOnly) > 0 {
 		fmt.Fprintf(&b, "NOT OFFSITE: these hosts are kept hot-only and are never mirrored,\nso they can only be restored from the local repo below: %s\n\n",
-			strings.Join(c.Mirror.ExcludeHosts, ", "))
+			strings.Join(hotOnly, ", "))
 	}
 
 	b.WriteString("==================================================================\n")
@@ -74,13 +86,25 @@ func buildRecoveryKit(c *config.Config, resticVer string, now time.Time) string 
 	}
 
 	if len(c.Clients) > 0 {
-		b.WriteString("\nPER-CLIENT REPOSITORIES (each enrolled machine has its own repo on the\nNAS, with its own password; all of them are copied into the offsite repo\nabove unless listed as NOT OFFSITE):\n\n")
+		b.WriteString("\nPER-CLIENT REPOSITORIES (each enrolled machine has its own repo on the\nNAS, with its own password; all of them are copied into the offsite storages\nabove unless listed as NOT OFFSITE):\n\n")
 		for _, n := range clientNames(c) {
 			fmt.Fprintf(&b, "  %-20s %s\n  %-20s password: %s\n", n, c.ClientRepo(n).Repository, "", c.Clients[n].Password)
 		}
 	}
 
 	return b.String()
+}
+
+// hotOnlyHosts lists the hosts routed to no offsite storage at all.
+func hotOnlyHosts(c *config.Config) []string {
+	var out []string
+	for h := range c.Routing {
+		if len(c.ServerOffsiteFor(h)) == 0 {
+			out = append(out, h)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // handleRecoveryKit streams the recovery kit as a download. The body is NEVER

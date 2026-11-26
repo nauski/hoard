@@ -7,6 +7,7 @@ import (
 	"github.com/nauski/hoard/internal/config"
 	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -92,6 +93,9 @@ type reportRequest struct {
 	Settings        json.RawMessage `json:"settings"`
 	AgentVersion    string          `json:"agent_version"`
 	IgnoredExcludes []string        `json:"ignored_excludes"`
+	// Offsite is the client's wish; nil (field absent) leaves the stored one
+	// alone, an empty list clears it.
+	Offsite []string `json:"offsite"`
 }
 
 // managedPush is a signed settings push handed to a client in a report reply.
@@ -127,9 +131,14 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 					req.Host+" no longer accepts the backup settings saved on the server; it now decides by itself what it backs up.")
 			}
 		}
+		wish := s.store.ClientInfoFor(req.Host).OffsiteWish
+		if req.Offsite != nil {
+			wish = req.Offsite
+		}
 		s.store.SetClientInfo(req.Host, state.ClientInfo{
 			SeenAt: time.Now(), AgentVersion: req.AgentVersion, Managed: req.Managed,
 			AppliedVersion: req.AppliedVersion, Settings: req.Settings, IgnoredExcludes: req.IgnoredExcludes,
+			OffsiteWish: wish,
 		})
 		// Hand over settings saved on the dashboard that this client has not
 		// applied yet. Only clients with their own repository can be managed:
@@ -142,7 +151,56 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if req.CheckIn {
+		cfg := s.cfg.Load()
+		stores := make([]map[string]string, 0, len(cfg.Offsite))
+		for _, o := range cfg.Offsite {
+			stores = append(stores, map[string]string{"id": o.ID, "label": o.Label})
+		}
+		reply["offsite_storages"] = stores
+		reply["offsite_server"] = cfg.ServerOffsiteFor(req.Host)
+	}
 	writeJSON(w, http.StatusOK, reply)
+}
+
+// handleSetClientOffsite sets which offsite storages a host is mirrored to:
+// storages null drops the routing entry (back to the defaults), a list
+// (possibly empty = hot only) sets it. Works for any host name, including
+// machines on the shared repository.
+func (s *Server) handleSetClientOffsite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host     string    `json:"host"`
+		Storages *[]string `json:"storages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Host == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing host"})
+		return
+	}
+	if req.Storages != nil {
+		for _, id := range *req.Storages {
+			if _, ok := s.cfg.Load().OffsiteByID(id); !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown offsite storage " + id})
+				return
+			}
+		}
+	}
+	err := s.cfg.Update(func(c *config.Config) {
+		routing := maps.Clone(c.Routing)
+		if req.Storages == nil {
+			delete(routing, req.Host)
+		} else {
+			if routing == nil {
+				routing = map[string][]string{}
+			}
+			routing[req.Host] = slices.Clone(*req.Storages)
+		}
+		c.Routing = routing
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleClientConfig (GET) returns what a client last reported about itself

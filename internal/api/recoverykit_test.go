@@ -16,11 +16,14 @@ import (
 func testKitConfig() *config.Config {
 	return &config.Config{
 		Hot: config.Repo{Repository: "rest:http://nas:8000/hot", Password: "hotpw"},
-		Cold: config.Repo{
-			Repository:        "s3:https://s3.example.com/mybucket",
-			Password:          "coldpw",
-			S3AccessKeyID:     "AKIAEXAMPLE",
-			S3SecretAccessKey: "supersecret",
+		Offsite: []config.Offsite{
+			{ID: "e2", Label: "IDrive e2", Default: true, Repo: config.Repo{
+				Repository:        "s3:https://s3.example.com/mybucket",
+				Password:          "coldpw",
+				S3AccessKeyID:     "AKIAEXAMPLE",
+				S3SecretAccessKey: "supersecret",
+			}},
+			{ID: "box", Label: "Hetzner Box", Repo: config.Repo{Repository: "sftp:box:/repo", Password: "boxpw"}},
 		},
 	}
 }
@@ -29,7 +32,8 @@ func TestBuildRecoveryKitContainsColdAndHot(t *testing.T) {
 	out := buildRecoveryKit(testKitConfig(), "0.18.0", time.Unix(0, 0).UTC())
 	for _, want := range []string{
 		"s3:https://s3.example.com/mybucket", "coldpw", "AKIAEXAMPLE", "supersecret",
-		"restic restore latest", "rest:http://nas:8000/hot", "hotpw", "0.18.0",
+		"restic restore latest", "IDrive e2", "Hetzner Box", "boxpw",
+		"restic -r 's3:https://s3.example.com/mybucket' snapshots", "restic -r 'sftp:box:/repo' snapshots", "rest:http://nas:8000/hot", "hotpw", "0.18.0",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("kit missing %q\n---\n%s", want, out)
@@ -37,9 +41,16 @@ func TestBuildRecoveryKitContainsColdAndHot(t *testing.T) {
 	}
 }
 
+func TestBuildRecoveryKitOnlyS3BlockHasKeys(t *testing.T) {
+	out := buildRecoveryKit(testKitConfig(), "0.18.0", time.Unix(0, 0).UTC())
+	if n := strings.Count(out, "AWS_ACCESS_KEY_ID"); n != 1 {
+		t.Fatalf("want S3 keys only for the S3 storage, got %d blocks\n%s", n, out)
+	}
+}
+
 func TestBuildRecoveryKitUnconfiguredCold(t *testing.T) {
 	c := testKitConfig()
-	c.Cold = config.Repo{} // nothing configured
+	c.Offsite = nil // nothing configured
 	out := buildRecoveryKit(c, "0.18.0", time.Unix(0, 0).UTC())
 	if strings.Contains(out, "supersecret") {
 		t.Fatal("kit leaked a secret for an unconfigured repo")
@@ -51,7 +62,7 @@ func TestBuildRecoveryKitUnconfiguredCold(t *testing.T) {
 
 func TestBuildRecoveryKitPartialCold(t *testing.T) {
 	c := testKitConfig()
-	c.Cold = config.Repo{Password: "coldpw"} // repository is empty, password is set
+	c.Offsite = []config.Offsite{{ID: "x", Label: "X", Repo: config.Repo{Password: "coldpw"}}} // repository is empty, password is set
 	out := buildRecoveryKit(c, "0.18.0", time.Unix(0, 0).UTC())
 	if strings.Contains(out, "export RESTIC_REPOSITORY=''") {
 		t.Fatal("kit has misleading blank export for unconfigured repository")

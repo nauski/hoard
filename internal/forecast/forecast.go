@@ -14,11 +14,8 @@ type Projection struct {
 	FirstAt     time.Time `json:"first_at"`
 	LastAt      time.Time `json:"last_at"`
 	HotStored   int64     `json:"hot_stored"`
-	ColdStored  int64     `json:"cold_stored"`
 	HotPerDay   int64     `json:"hot_per_day"`
-	ColdPerDay  int64     `json:"cold_per_day"`
 	Hot90d      int64     `json:"hot_90d"`
-	Cold90d     int64     `json:"cold_90d"`
 	ProjectedAt time.Time `json:"projected_at"`
 }
 
@@ -64,14 +61,10 @@ func Project(samples []state.SizeSample, horizon time.Duration, now time.Time) P
 	first, last := samples[0].At, samples[len(samples)-1].At
 	p.FirstAt, p.LastAt = first, last
 	p.HotStored = samples[len(samples)-1].HotStored
-	p.ColdStored = samples[len(samples)-1].ColdStored
 
-	var hot, cold []pt
+	var hot []pt
 	for _, s := range samples {
 		hot = append(hot, pt{toDays(s.At), float64(s.HotStored)})
-		if s.ColdStored > 0 {
-			cold = append(cold, pt{toDays(s.At), float64(s.ColdStored)})
-		}
 	}
 	atDays := toDays(last.Add(horizon))
 	p.ProjectedAt = last.Add(horizon)
@@ -83,13 +76,43 @@ func Project(samples []state.SizeSample, horizon time.Duration, now time.Time) P
 			p.Hot90d = clampInt64(val)
 		}
 	}
-	if len(cold) >= 2 && cold[len(cold)-1].days-cold[0].days >= 1 {
-		if slope, val, ok := fit(cold, atDays); ok {
-			p.ColdPerDay = int64(slope)
-			p.Cold90d = clampInt64(val)
+	return p
+}
+
+// Storage is the size projection of one offsite storage.
+type Storage struct {
+	Stored int64 `json:"stored"`
+	PerDay int64 `json:"per_day"`
+	In90d  int64 `json:"in_90d"`
+}
+
+// ProjectStorage projects one offsite storage's size. Samples taken before
+// per-storage sizes existed only have ColdStored; first says to count that as
+// this storage's size.
+func ProjectStorage(samples []state.SizeSample, id string, first bool, horizon time.Duration) Storage {
+	var pts []pt
+	var out Storage
+	if len(samples) == 0 {
+		return out
+	}
+	ref := samples[0].At
+	toDays := func(t time.Time) float64 { return t.Sub(ref).Hours() / 24 }
+	for _, s := range samples {
+		v, ok := s.Offsite[id]
+		if !ok && first && s.Offsite == nil {
+			v = s.ColdStored
+		}
+		out.Stored = v
+		if v > 0 {
+			pts = append(pts, pt{toDays(s.At), float64(v)})
 		}
 	}
-	return p
+	if len(pts) >= 2 && pts[len(pts)-1].days-pts[0].days >= 1 {
+		if slope, val, ok := fit(pts, toDays(samples[len(samples)-1].At.Add(horizon))); ok {
+			out.PerDay, out.In90d = int64(slope), clampInt64(val)
+		}
+	}
+	return out
 }
 
 func clampInt64(f float64) int64 {
