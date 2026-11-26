@@ -63,9 +63,11 @@ func main() {
 			log.Error("init hot repo", "err", err)
 			os.Exit(1)
 		}
-		if err := restic.New(*resticBin, cfg.Cold).EnsureInit(ctx); err != nil {
-			log.Error("init cold repo", "err", err)
-			os.Exit(1)
+		for _, o := range cfg.Offsite {
+			if err := restic.New(*resticBin, o.Repo).InitLike(ctx, &cfg.Hot); err != nil {
+				log.Error("init offsite repo", "storage", o.Label, "err", err)
+				os.Exit(1)
+			}
 		}
 		log.Info("repos initialized")
 		return

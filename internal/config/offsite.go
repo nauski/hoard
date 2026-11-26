@@ -70,10 +70,14 @@ func (c *Config) ServerOffsiteFor(host string) []string { return c.OffsiteFor(ho
 // migrateOffsite turns the legacy single cold repo into the first storage.
 func (c *Config) migrateOffsite() {
 	if len(c.Offsite) > 0 || c.Cold.Repository == "" {
+		c.Cold, c.Mirror.ExcludeHosts = Repo{}, nil // never written back
 		return
 	}
 	c.Offsite = []Offsite{{ID: "e2", Label: "IDrive e2", Default: true, Repo: c.Cold}}
-	for _, h := range c.Mirror.ExcludeHosts {
+	c.Cold = Repo{}
+	excluded := c.Mirror.ExcludeHosts
+	c.Mirror.ExcludeHosts = nil
+	for _, h := range excluded {
 		if _, ok := c.Routing[h]; ok {
 			continue
 		}

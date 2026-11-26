@@ -88,7 +88,7 @@
   <span id="authWarn" class="badge b-bad" hidden title="Anyone who can reach this page can read, download and delete every backup, and download the recovery kit with all passwords. Set a dashboard password in Settings.">no dashboard password</span>
   <div class="repo">
     <div>hot: <span class="help below" tabindex="0" data-tip="Local staging repo on the NAS. Clients push backups here first over your LAN (fast). Mirrored offsite on a schedule.">ⓘ</span> <span id="hotRepo" class="mono">—</span> <b id="hotSize"></b> <span id="hotSaved" class="sub"></span></div>
-    <div>cold: <span class="help below" tabindex="0" data-tip="Offsite copy in S3 (IDrive e2) — your disaster-recovery copy. Survives the NAS dying.">ⓘ</span> <span id="coldRepo" class="mono">—</span> <b id="coldSize"></b> <span id="coldSaved" class="sub"></span><span class="help below" tabindex="0" data-tip="restic compresses and deduplicates. logical = total size of your files; stored = actual repo size after that; % saved = how much smaller it is.">ⓘ</span></div>
+    <div>offsite: <span class="help below" tabindex="0" data-tip="Offsite copies: your disaster-recovery copies, each in its own storage. They survive the NAS dying.">ⓘ</span> <span id="offsiteHead">none configured</span><span class="help below" tabindex="0" data-tip="restic compresses and deduplicates. logical = total size of your files; stored = actual repo size after that; % saved = how much smaller it is.">ⓘ</span></div>
     <div class="sub">Restore check: <span class="help below" tabindex="0" data-tip="Fire drill: on a schedule, hoard restores a sampled file and verifies its contents — proof your backups actually come back, not just that they exist.">ⓘ</span> <span id="verifyBadge">—</span></div>
   </div>
   <button id="themeToggle" class="themebtn" onclick="toggleTheme()" title="Toggle light / dark">🌙</button>
@@ -131,10 +131,20 @@
       <div><label><input type="checkbox" id="mgCaches"> skip cache folders (CACHEDIR.TAG)</label></div>
       <div><label><input type="checkbox" id="mgNoScan"> no pre-scan (faster start, no percentage)</label></div>
     </div>
+    <div id="mgOffsite" style="margin-top:12px"></div>
     <div class="bar" style="margin-top:10px">
       <button onclick="saveManage()">Save for this client</button>
       <button class="secondary" onclick="backupNowManage()">Back up now</button>
       <span id="mgMsg" class="sub"></span>
+    </div>
+  </div>
+
+  <div class="card" id="offsiteCard" hidden>
+    <h2>Offsite for <span id="ocHost" class="mono"></span> <button class="mini" onclick="$('#offsiteCard').hidden=true">close</button></h2>
+    <div id="ocBlock"></div>
+    <div class="bar" style="margin-top:10px">
+      <button onclick="saveOffsiteCard()">Save</button>
+      <span id="ocMsg" class="sub"></span>
     </div>
   </div>
 
@@ -149,8 +159,8 @@
   <div class="card">
     <h2>Actions</h2>
     <div class="actions">
-      <button id="btnMirror">Mirror to e2 now</button><span class="help" tabindex="0" data-tip="Copy new snapshots from the local repo up to the offsite S3 copy now (normally runs nightly).">ⓘ</span>
-      <button id="btnCheck" class="secondary">Verify integrity</button><span class="help" tabindex="0" data-tip="Ask restic to re-read the offsite repo's data and confirm nothing is corrupted.">ⓘ</span>
+      <button id="btnMirror">Mirror offsite now</button><span class="help" tabindex="0" data-tip="Copy new snapshots from the local repo up to every offsite storage now (normally runs nightly).">ⓘ</span>
+      <button id="btnCheck" class="secondary">Verify integrity</button><span class="help" tabindex="0" data-tip="Ask restic to re-read each offsite repo's data and confirm nothing is corrupted.">ⓘ</span>
     </div>
     <p class="sub" id="actionMsg"></p>
     <div id="serverJob" class="sub" style="margin-top:8px"></div>
@@ -197,12 +207,11 @@
     <h2>Settings</h2>
     <div class="sub" style="margin-bottom:8px">Schedule</div>
     <div class="setgrid">
-      <div><label class="sub">Mirror to e2 at (HH:MM)</label><input id="cfgMirror" type="text" placeholder="02:30"></div>
+      <div><label class="sub">Mirror offsite at (HH:MM)</label><input id="cfgMirror" type="text" placeholder="02:30"></div>
       <div><label class="sub">Integrity check at (HH:MM)</label><input id="cfgCheck" type="text" placeholder="04:00"></div>
       <div><label class="sub">Check weekday (0=Sun…6=Sat, blank=daily)</label><input id="cfgWeekday" type="text" placeholder="0"></div>
       <div><label class="sub">Stale after (e.g. 26h)</label><input id="cfgStale" type="text" placeholder="26h"></div>
       <div><label class="sub">Stale after, per host<span class="help" tabindex="0" data-tip="Overrides for single hosts, e.g. an hourly host: hourly-vm=3h, laptop=72h">ⓘ</span></label><input id="cfgStaleHosts" type="text" placeholder="host=3h, other=72h"></div>
-      <div><label class="sub">Hot-only hosts<span class="help" tabindex="0" data-tip="Comma-separated hostnames that are never mirrored offsite. Their backups exist only on this server.">ⓘ</span></label><input id="cfgHotOnly" type="text" placeholder="host1, host2"></div>
       <div><label class="sub">Verify (restore fire-drill, HH:MM — blank disables)</label><input id="cfgVerify" type="text" placeholder="03:30"></div>
     </div>
     <div class="sub" style="margin:12px 0 8px">Retention — keep<span class="help" tabindex="0" data-tip="How many backups to keep (by age). Preview shows exactly which snapshots a policy would delete before you apply it.">ⓘ</span></div>
@@ -245,7 +254,7 @@
       <div><label class="sub">To</label><input id="cfgSmtpTo" type="text" placeholder="you@gmail.com"></div>
     </div>
     <div class="bar" style="margin-top:8px"><button class="secondary" onclick="testEmail()">Send test email</button><span class="sub" id="cfgEmailMsg"></span></div>
-    <div class="sub" style="margin:12px 0 8px">Offsite storage — any S3-compatible provider (IDrive e2, AWS S3, Backblaze B2, Wasabi, MinIO, Cloudflare R2…)</div>
+    <div class="sub" style="margin:12px 0 8px">Offsite storage — each storage is its own restic repository. Any S3-compatible provider (IDrive e2, AWS S3, Backblaze B2, Wasabi, MinIO, Cloudflare R2…) or SFTP (Hetzner Storage Box: put the SSH key in <span class="mono">&lt;data&gt;/ssh</span> and leave the S3 keys empty)</div>
     <div id="kitBanner" class="card" style="display:none;border-color:var(--warn);background:rgba(210,153,34,.08);margin-bottom:12px">
       <b>⚠ Save your recovery kit.</b><span class="help" tabindex="0" data-tip="A plain-text file with your repo passwords + restore commands, so you can recover with stock restic even if hoard is gone. Store it safely.">ⓘ</span> <span class="sub">Without your repository password, your backups can't be recovered — not even by hoard. Download this file and store it in a password manager.</span>
       <div class="bar" style="margin-top:8px">
@@ -253,22 +262,14 @@
         <button class="secondary" onclick="ackKit()">I've saved it safely ✓</button>
       </div>
     </div>
-    <div class="setgrid">
-      <div style="grid-column:1/-1"><label class="sub">Repository (restic S3 URL: <span class="mono">s3:https://ENDPOINT/BUCKET</span>)</label><input id="cfgColdRepo" type="text" placeholder="s3:https://s3.us-west-1.amazonaws.com/my-bucket"></div>
-      <div><label class="sub">S3 access key ID</label><input id="cfgColdKey" type="text"></div>
-      <div><label class="sub">S3 secret access key <span id="cfgSecretHint" class="sub"></span></label><input id="cfgColdSecret" type="password" placeholder="leave blank to keep"></div>
-      <div><label class="sub">Repo password <span id="cfgPwHint" class="sub"></span></label><input id="cfgColdPw" type="password" placeholder="leave blank to keep"></div>
-      <div><label class="sub">Upload limit (KiB/s, 0 = unlimited)<span class="help" tabindex="0" data-tip="Cap restic transfer speed in KiB/s. 0 = unlimited.">ⓘ</span> <span class="sub">2000 ≈ 2 MB/s</span></label><input id="cfgColdUp" type="number" min="0" placeholder="0"></div>
-      <div><label class="sub">Download limit (KiB/s, 0 = unlimited)</label><input id="cfgColdDown" type="number" min="0" placeholder="0"></div>
-    </div>
+    <div id="offsiteList"></div>
+    <div class="bar" style="margin-top:10px"><button class="secondary" onclick="addOffsite()">Add storage</button></div>
     <div class="bar" style="margin-top:14px">
       <button onclick="saveConfig()">Save settings</button>
-      <button class="secondary" onclick="testCold()">Test storage connection</button>
-      <button class="secondary" onclick="initCold()">Initialize repository</button>
       <button class="secondary" onclick="downloadKit()">Download recovery kit</button>
       <span class="sub" id="cfgMsg"></span>
     </div>
-    <div class="sub" style="margin-top:6px">↳ "Test" and "Initialize" save the fields above first, so they always use exactly what you've typed. "Initialize repository" creates a fresh restic repo in an <b>empty</b> bucket (needed once when pointing at new storage); harmless if the repo already exists.</div>
+    <div class="sub" style="margin-top:6px">↳ "Test" and "Initialize" save the settings first, so they always use exactly what you've typed. "Initialize" creates a fresh restic repo in an <b>empty</b> bucket or folder (needed once when pointing at new storage); harmless if the repo already exists. A storage you just added can be tested after the first save.</div>
     <div class="sub" style="margin-top:10px">Hot repo (local staging, deploy-time): <span class="mono" id="cfgHotRepo">—</span> · <span id="cfgSecrets"></span></div>
   </div>
   <div class="card">
@@ -288,7 +289,7 @@
       <div class="mono sub" id="delPath">—</div>
       <div style="margin-top:12px">
         <label><input type="radio" name="delscope" value="version" checked onchange="onScope()"> <span>From <b>this version only</b> — the file stays in other snapshots.</span></label>
-        <label><input type="radio" name="delscope" value="all" onchange="onScope()"> <span>From <b class="danger-text">ALL versions</b> — permanently removes it everywhere (hot + e2) and reclaims space. <b class="danger-text">Cannot be undone.</b></span></label>
+        <label><input type="radio" name="delscope" value="all" onchange="onScope()"> <span>From <b class="danger-text">ALL versions</b> — permanently removes it everywhere (this server and every offsite storage) and reclaims space. <b class="danger-text">Cannot be undone.</b></span></label>
       </div>
       <div id="delConfirmWrap" style="display:none;margin-top:10px">
         <span class="sub">Type the filename <b class="mono" id="delConfirmName"></b> to confirm:</span>
@@ -340,20 +341,84 @@ function age(t){
 }
 function badge(ok){ return ok ? '<span class="badge b-ok">ok</span>' : '<span class="badge b-bad">failed</span>'; }
 
+// ---------------- Offsite storages (shared helpers) ----------------
+let lastStatus={}, storages=[], offsiteStats={};
+const storageLabel = id => (storages.find(o=>o.id===id)||{label:id}).label;
+// "<job> · <storage label>" for results that belong to one storage
+const jobTitle = r => r.job + (r.target ? " · "+storageLabel(r.target) : "");
+function offsiteBadges(c){
+  const eff=c.offsite||[], wish=c.offsite_wish||[], srv=c.offsite_server;
+  if(!eff.length) return '<span class="badge b-idle" title="No offsite copy: this client exists only on this server">hot only</span>';
+  return eff.map(id=>{
+    const o=storages.find(x=>x.id===id);
+    const fromRouting = srv ? srv.includes(id) : !!(o&&o.default);
+    return '<span class="badge b-idle"'+(wish.includes(id)&&!fromRouting?' title="set on the client"':'')+'>'+esc(storageLabel(id))+'</span>';
+  }).join(" ");
+}
+function renderOffsiteHead(){
+  $("#offsiteHead").innerHTML = storages.length ? storages.map(o=>{
+    const st=offsiteStats[o.id];
+    return '<span class="badge b-idle" title="'+esc(o.repository||"")+'">'+esc(o.label)+'</span>'
+      +(st?' <b>'+hBytes(st.total_size)+'</b> <span class="sub">'+esc(savingsLine(st))+'</span>':'');
+  }).join(" · ") : '<span class="sub">none configured</span>';
+}
+
+// The per-client offsite chooser, drawn into el: "follow the defaults" or an
+// explicit list. Storages the client asked for itself stay ticked and locked.
+function renderOffsiteBlock(el, host){
+  const c=((lastStatus.clients||{})[host])||{}, srv=c.offsite_server, wish=c.offsite_wish||[];
+  const defs=storages.filter(o=>o.default).map(o=>o.label);
+  const name=el.id+"-mode";
+  el.innerHTML='<div class="sub" style="margin-bottom:6px">Offsite storages for this client</div>'
+    +'<label style="display:block"><input type="radio" name="'+name+'" value="follow"'+(srv?'':' checked')+'> Follow the defaults ('+(defs.length?esc(defs.join(", ")):"none")+')</label>'
+    +'<label style="display:block"><input type="radio" name="'+name+'" value="choose"'+(srv?' checked':'')+'> Choose:</label>'
+    +(storages.length ? storages.map(o=>{
+      const chosen = srv ? srv.includes(o.id) : o.default;
+      const wishOnly = wish.includes(o.id) && !chosen;
+      return '<label style="display:block;margin-left:24px"><input type="checkbox" data-id="'+esc(o.id)+'"'+((chosen||wishOnly)?' checked':'')+(wishOnly?' disabled':'')+'> '+esc(o.label)+(wishOnly?' <span class="sub">(set on the client)</span>':'')+'</label>';
+    }).join("") : '<div class="sub" style="margin-left:24px">No offsite storage configured. Add one under Settings.</div>')
+    +'<div class="sub" style="margin-top:6px">Unticking a storage stops new copies. Backups already stored there stay until you delete them.</div>';
+  el.onchange=e=>{ if(e.target.type==="checkbox") el.querySelector('input[value=choose]').checked=true; };
+}
+// null = follow the defaults, else the ticked storage ids
+function offsiteChoice(el){
+  if(el.querySelector('input[value=follow]').checked) return null;
+  return [...el.querySelectorAll('input[type=checkbox]:not(:disabled):checked')].map(x=>x.dataset.id);
+}
+async function postOffsiteChoice(host, el){
+  const r=await fetch("/api/clients/offsite",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host,storages:offsiteChoice(el)})});
+  if(r.ok) return "";
+  let j={}; try{ j=await r.json(); }catch(e){}
+  return j.error||r.status;
+}
+let ocHost="";
+function openOffsite(host){
+  ocHost=host; $("#ocHost").textContent=host; $("#ocMsg").textContent="";
+  renderOffsiteBlock($("#ocBlock"),host); $("#offsiteCard").hidden=false;
+  $("#offsiteCard").scrollIntoView({block:"center"});
+}
+async function saveOffsiteCard(){
+  const err=await postOffsiteChoice(ocHost,$("#ocBlock"));
+  if(err){ $("#ocMsg").textContent="error: "+err; return; }
+  await refresh(); renderOffsiteBlock($("#ocBlock"),ocHost);
+  $("#ocMsg").textContent="saved ✓";
+}
+
 async function refresh(){
   try{
     const st = await (await fetch("/api/status")).json();
+    lastStatus = st; storages = st.offsite || [];
+    renderOffsiteHead();
     if(st.version){ $("#ver").textContent="v"+st.version; document.title="hoard v"+st.version+" — backup control"; }
     $("#authWarn").hidden = st.auth_enabled !== false;
     if(lastTrigger && !st.running){
-      const r=(st.jobs||{})[lastTrigger.job];
-      if(r && new Date(r.ended_at).getTime() >= lastTrigger.at-2000){
-        $("#actionMsg").textContent = lastTrigger.job+" finished: "+(r.ok?"ok":"failed")+(r.message?" · "+r.message:"");
+      const rs=Object.entries(st.jobs||{}).filter(([k,r])=>k.split("@")[0]===lastTrigger.job && new Date(r.ended_at).getTime() >= lastTrigger.at-2000).map(x=>x[1]);
+      if(rs.length){
+        $("#actionMsg").textContent = rs.map(r=>jobTitle(r)+": "+(r.ok?"ok":"failed")+(r.message?" · "+r.message:"")).join("   |   ");
         lastTrigger=null;
       }
     }
     $("#hotRepo").textContent = st.hot_repo || "—";
-    $("#coldRepo").textContent = st.cold_repo || "—";
     const run = st.running || "";
     const r = $("#running");
     r.textContent = run || "idle";
@@ -366,7 +431,7 @@ async function refresh(){
     // server job's result (mirror/check/prune/verify — restore has its own
     // "Running backups" panel below).
     (function(){
-      const labels = {mirror:"Mirroring to e2", check:"Checking e2 integrity", prune:"Applying retention", "prune-hot":"Applying retention to the hot repo", verify:"Verifying a restore", restore:"Restoring"};
+      const labels = {mirror:"Mirroring offsite", check:"Checking offsite integrity", prune:"Applying retention", "prune-hot":"Applying retention to the hot repo", verify:"Verifying a restore", restore:"Restoring"};
       const el = $("#serverJob");
       if(!el) return;
       if(run){
@@ -382,10 +447,10 @@ async function refresh(){
         const jobs = st.jobs||{};
         const now = st.now ? new Date(st.now).getTime() : Date.now();
         let newest=null;
-        ["mirror","check"].forEach(k=>{ const j=jobs[k]; if(j && (!newest || (j.ended_at||"")>(newest.ended_at||""))) newest=j; });
+        Object.entries(jobs).forEach(([k,j])=>{ if(["mirror","check"].includes(k.split("@")[0]) && (!newest || (j.ended_at||"")>(newest.ended_at||""))) newest=j; });
         const ageMs = newest && newest.ended_at ? (now - new Date(newest.ended_at).getTime()) : Infinity;
         if(newest && (!newest.ok || ageMs < 15000)){
-          el.innerHTML = (newest.ok?'✓ ':'✗ ')+esc(newest.message||"");
+          el.innerHTML = (newest.ok?'✓ ':'✗ ')+(newest.target?esc(jobTitle(newest))+": ":"")+esc(newest.message||"");
           el.style.color = newest.ok ? "var(--muted)" : "var(--bad)";
         } else {
           el.innerHTML = "";
@@ -434,12 +499,14 @@ async function refresh(){
     const jobs = st.jobs || {};
     const order = ["mirror","check","prune"];
     $("#jobCards").innerHTML = order.map(j=>{
-      const job = jobs[j];
-      const state = job ? (job.ok?'b-ok':'b-bad') : 'b-idle';
-      const label = job ? (job.ok?'ok':'failed') : 'never run';
-      return `<div class="card"><h2>${j}</h2>
-        <div class="metric"><span class="badge ${state}">${label}</span></div>
-        <div class="sub">${job?fmt(job.ended_at):"—"}</div></div>`;
+      // one line per offsite storage; with none configured, the plain job
+      const rows = storages.length ? storages.map(o=>[o.label, jobs[j+"@"+o.id]]) : [["", jobs[j]]];
+      return `<div class="card"><h2>${esc(j)}</h2>`+rows.map(([lbl,job])=>{
+        const state = job ? (job.ok?'b-ok':'b-bad') : 'b-idle';
+        const text = job ? (job.ok?'ok':'failed') : 'never run';
+        return `<div class="metric"><span class="badge ${state}">${text}</span>`
+          + (lbl?` <span class="sub">${esc(lbl)}</span>`:'')+` <span class="sub">${job?fmt(job.ended_at):"—"}</span></div>`;
+      }).join("")+`</div>`;
     }).join("");
 
     const clients = st.clients || {};
@@ -453,8 +520,9 @@ async function refresh(){
         + (never ? '<span class="badge b-bad" title="Enrolled, but no backup has finished yet">no backup yet</span>'
            : (c.stale ? '<span class="badge b-bad">stale</span>' : '<span class="badge b-ok">protected</span>'))
         + (c.own_repo ? ' <span class="badge b-idle" title="This machine has its own repository and login; other machines cannot read its backups">own repo</span>' : (st.private_repos ? ' <span class="badge b-warn" title="Still on the shared repo, which clients can no longer reach. Enroll this machine again to give it its own repository.">shared repo: re-enroll</span>' : ''))
-        + (c.hot_only ? ' <span class="badge b-idle" title="Excluded from the offsite mirror: this host exists only on this server">hot only</span>' : '');
-      const manageBtn = c.own_repo ? ' <button class="mini" onclick="openManage(\''+esc(c.hostname)+'\')">Manage</button>' : '';
+        + ' ' + offsiteBadges(c);
+      const manageBtn = ' <button class="mini" data-host="'+esc(c.hostname)+'" onclick="openOffsite(this.dataset.host)">Offsite</button>'
+        + (c.own_repo ? ' <button class="mini" onclick="openManage(\''+esc(c.hostname)+'\')">Manage</button>' : '');
       const seenLine = c.seen_at ? '<div class="sub">agent '+esc(c.agent_version||"?")+' · checked in '+age(c.seen_at)+' ago'+(c.managed?' · managed here':'')+'</div>' : '';
       const an = c.anomaly;
       const anCell = an ? '<div style="margin-top:4px"><span class="badge b-bad" title="The newest backup has far fewer files than the one before it">'+(an.files_before-an.files_after)+' files vanished</span> '
@@ -479,7 +547,7 @@ async function refresh(){
     const rows = (hist||[]).slice(-15).reverse();
     $("#history").innerHTML = rows.length ? rows.map(h=>{
       const dur = ((new Date(h.ended_at)-new Date(h.started_at))/1000).toFixed(1)+"s";
-      return `<tr><td>${h.job}</td><td>${fmt(h.started_at)}</td><td>${dur}</td>
+      return `<tr><td>${esc(jobTitle(h))}</td><td>${fmt(h.started_at)}</td><td>${dur}</td>
         <td>${badge(h.ok)}</td><td class="sub">${(h.message||"").slice(0,80)}</td></tr>`;
     }).join("") : '<tr><td colspan="5" class="sub">no jobs recorded</td></tr>';
   }catch(e){}
@@ -600,6 +668,7 @@ async function openManage(host){
   else if(j.pending) state="Saved settings (version "+j.desired_version+") are waiting for the client to fetch them; it last checked in "+age(info.seen_at)+" ago and has applied version "+(info.applied_version||0)+".";
   else state="In sync: the client checked in "+age(info.seen_at)+" ago"+(j.desired?" and runs version "+j.desired_version+" of the settings saved here.":" and runs its own local settings, shown below.");
   $("#mgState").textContent=state;
+  renderOffsiteBlock($("#mgOffsite"),host);
   // What the client adds on its own, beyond what is required here.
   const loc=info.settings||{}, req=(j.desired||{}).paths||[];
   const extra=(loc.paths||[]).filter(p=>!req.includes(p));
@@ -615,9 +684,12 @@ async function saveManage(){
     exclude_if_present:$("#mgIfPresent").value.split(",").map(x=>x.trim()).filter(Boolean),
     exclude_larger_than:$("#mgLarger").value.trim(),exclude_caches:$("#mgCaches").checked,schedule:$("#mgSched").value.trim(),
     no_scan:$("#mgNoScan").checked,read_concurrency:num("mgReadConc"),nice:num("mgNice"),ionice_class:$("#mgIonice").value};
+  const oerr=await postOffsiteChoice(mgHost,$("#mgOffsite"));
+  if(oerr){ $("#mgMsg").textContent="error (offsite): "+oerr; return; }
   const r=await fetch("/api/clients/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host:mgHost,settings})});
   const j=await r.json();
   if(!r.ok){ $("#mgMsg").textContent="error: "+(j.error||r.status); return; }
+  await refresh();
   await openManage(mgHost);
   $("#mgMsg").textContent="saved as version "+j.version+". An agent that runs all the time fetches it within a minute; a timer-driven one at its next run.";
 }
@@ -711,7 +783,7 @@ function renderFiles(){
 function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=0?"/":d.slice(0,i); }
 
 function deleteVersion(id){
-  if(!confirm("Delete the ENTIRE version "+id+" (this snapshot) from hot + e2?\nOther versions are unaffected.")) return;
+  if(!confirm("Delete the ENTIRE version "+id+" (this snapshot) from this server and every offsite storage?\nOther versions are unaffected.")) return;
   // Optimistic: drop the row now and mark it pending so no reload can bring it
   // back; reconcile once the server confirms it's gone.
   pendingDel.add(id);
@@ -764,7 +836,7 @@ loadClients();
 setInterval(loadClients, 8000);
 
 // Repository storage totals (deduplicated). Fetched infrequently — stats reads
-// the index and cold hits e2.
+// the index and every offsite storage is hit over the network.
 function savingsLine(o){
   if(!o || !o.logical_size) return "";
   const saved=Math.max(0, Math.round((1 - o.total_size/o.logical_size)*100));
@@ -774,26 +846,26 @@ async function loadStats(){
   try{
     const st=await (await fetch("/api/stats")).json();
     if(st.hot){ $("#hotSize").textContent="· "+hBytes(st.hot.total_size); $("#hotSaved").textContent=savingsLine(st.hot); }
-    if(st.cold){ $("#coldSize").textContent="· "+hBytes(st.cold.total_size); $("#coldSaved").textContent=savingsLine(st.cold); }
+    offsiteStats=st; renderOffsiteHead();
   }catch(e){}
   loadForecast();
 }
 loadStats();
 setInterval(loadStats, 60000);
 
-// Storage forecast — projects hot/cold repo growth from recent daily samples.
+// Storage forecast — projects hot and offsite repo growth from recent daily samples.
 async function loadForecast(){
   try{
     const r = await fetch("/api/forecast"); const p = await r.json();
     const el = document.getElementById("forecast");
     if(!p.have_data){ el.textContent = "Collecting data — a projection appears after a few daily samples."; return; }
     const line = (label, now, perDay, at90, at) => {
-      if(perDay <= 0) return `${label}: ${hBytes(now)} now · not growing`;
+      if(!(perDay > 0)) return `${label}: ${hBytes(now)} now · not growing`;
       const when = new Date(at).toLocaleDateString(undefined,{month:"short",day:"numeric"});
       return `${label}: ${hBytes(now)} now · +${hBytes(perDay*7)}/week · ~${hBytes(at90)} by ${when}`;
     };
     const rows = [ line("Hot", p.hot_stored, p.hot_per_day, p.hot_90d, p.projected_at) ];
-    if(p.cold_stored > 0 || p.cold_per_day > 0) rows.push(line("Cold (e2)", p.cold_stored, p.cold_per_day, p.cold_90d, p.projected_at));
+    (p.offsite||[]).forEach(o=>{ if(o.stored > 0 || o.per_day > 0) rows.push(line(o.label, o.stored, o.per_day, o.in_90d, p.projected_at)); });
     el.innerHTML = rows.map(t=>`<div>${esc(t)}</div>`).join("");
   }catch(e){ /* keep prior text */ }
 }
@@ -813,7 +885,6 @@ async function loadConfig(){
     $("#cfgRetHosts").value=c.retention.hosts?JSON.stringify(c.retention.hosts,null,1):"";
     $("#cfgRetHot").checked=!!c.retention.apply_to_hot;
     $("#cfgStaleHosts").value=Object.entries(c.schedule.stale_after_hosts||{}).map(([h,d])=>h+"="+d).join(", ");
-    $("#cfgHotOnly").value=((c.mirror||{}).exclude_hosts||[]).join(", ");
     $("#cfgKDaily").value=c.retention.keep_daily||0;
     $("#cfgKWeekly").value=c.retention.keep_weekly||0;
     $("#cfgKMonthly").value=c.retention.keep_monthly||0;
@@ -834,20 +905,14 @@ async function loadConfig(){
     $("#cfgSmtpHost").value=sm.host||""; $("#cfgSmtpPort").value=sm.port||"";
     $("#cfgSmtpUser").value=sm.username||""; $("#cfgSmtpFrom").value=sm.from||""; $("#cfgSmtpTo").value=sm.to||"";
     $("#cfgSmtpPass").value=""; $("#cfgSmtpPwHint").textContent=sm.password_set?"(set)":"(not set)";
-    $("#cfgColdRepo").value=(c.cold&&c.cold.repository)||"";
-    $("#cfgColdKey").value=(c.cold&&c.cold.s3_access_key_id)||"";
-    $("#cfgColdSecret").value=""; $("#cfgColdPw").value="";
-    $("#cfgSecretHint").textContent=c.cold&&c.cold.secret_set?"(set)":"(not set)";
-    $("#cfgPwHint").textContent=c.cold&&c.cold.password_set?"(set)":"(not set)";
-    $("#cfgColdUp").value=(c.cold&&c.cold.limit_upload_kibps)||0;
-    $("#cfgColdDown").value=(c.cold&&c.cold.limit_download_kibps)||0;
+    renderOffsite(c.offsite);
     $("#cfgHotRepo").textContent=c.hot_repo||"—";
     $("#cfgSecrets").textContent="hot repo password: "+(c.hot_password_set?"✓ set":"✗ not set");
     const kb=$("#kitBanner"); if(kb) kb.style.display = c.recovery_kit_ack ? "none" : "block";
   }catch(e){}
 }
 function downloadKit(){
-  if(!confirm("The recovery kit contains your repository password and S3 secret in PLAINTEXT.\n\nStore it in a password manager. Never share it. Anyone with this file can read or delete your backups.\n\nDownload now?")) return;
+  if(!confirm("The recovery kit contains your repository passwords and storage secrets in PLAINTEXT.\n\nStore it in a password manager. Never share it. Anyone with this file can read or delete your backups.\n\nDownload now?")) return;
   window.location = "/api/recovery-kit";
 }
 async function ackKit(){
@@ -888,7 +953,6 @@ async function saveConfig(){
       verify:$("#cfgVerify").value.trim()},
     retention,
     dashboard_password:$("#cfgDashPw").value,
-    mirror:{exclude_hosts:$("#cfgHotOnly").value.split(",").map(x=>x.trim()).filter(Boolean)},
     alert:{webhook_url:$("#cfgWebhook").value.trim(),on_stale:$("#cfgOnStale").checked,
       on_failure:$("#cfgOnFailure").checked,failure_threshold:(parseInt($("#cfgFailThresh").value,10)||3)},
     anomaly:(()=>{ const percent=(parseInt($("#cfgAnPct").value,10)||0), hosts={};
@@ -896,9 +960,7 @@ async function saveConfig(){
       return {files:(parseInt($("#cfgAnFiles").value,10)||0),percent,hosts}; })(),
     smtp:{host:$("#cfgSmtpHost").value.trim(),port:$("#cfgSmtpPort").value.trim(),username:$("#cfgSmtpUser").value.trim(),
       from:$("#cfgSmtpFrom").value.trim(),to:$("#cfgSmtpTo").value.trim(),password:$("#cfgSmtpPass").value},
-    cold:{repository:$("#cfgColdRepo").value.trim(),s3_access_key_id:$("#cfgColdKey").value.trim(),
-      s3_secret_access_key:$("#cfgColdSecret").value, password:$("#cfgColdPw").value,
-      limit_upload_kibps:(parseInt($("#cfgColdUp").value,10)||0), limit_download_kibps:(parseInt($("#cfgColdDown").value,10)||0)}
+    offsite: collectOffsite()
   };
   $("#cfgMsg").textContent="saving…";
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -907,7 +969,7 @@ async function saveConfig(){
   $("#cfgMsg").textContent="error: "+(j.error||r.status);
   return false;
 }
-// Read-only dry-run against the cold repo's actual snapshots — lets you see the
+// Read-only dry-run against every offsite repo's actual snapshots — lets you see the
 // blast radius of a retention change before saving it.
 async function previewRetention(){
   let body;
@@ -925,20 +987,81 @@ async function previewRetention(){
       const list=(snaps||[]).slice(0,20).map(s=>esc(s.short_id)+" · "+esc(s.hostname||"")+" · "+new Date(s.time).toLocaleString()).join("<br>");
       return "<b>"+where+": would forget "+count+" snapshot"+(count>1?"s":"")+"</b> ("+hosts+")<br>"+list+(count>20?"<br>…":"")+"<br>";
     };
-    $("#retMsg").innerHTML=part("Offsite (e2)",j.count,j.snapshots)+part("Hot repo",j.hot_count,j.hot_snapshots);
+    $("#retMsg").innerHTML=(j.offsite||[]).map(o=>part("Offsite "+esc(o.label),o.count,o.snapshots)).join("")+part("Hot repo",j.hot_count,j.hot_snapshots);
   }catch(e){ $("#retMsg").textContent="preview failed"; }
 }
-// Test/Initialize always persist the current form FIRST, so they act on exactly
-// what's typed in the fields — no separate "remember to Save" step, no acting on
-// a stale server-side value.
-async function testCold(){
+// ---- offsite storage cards (Settings). A card without data-id is new: the
+// server gives it an id on the first save. Blank password/secret keep the
+// stored one.
+const ocField=(el,f)=>el.querySelector(".f-"+f);
+function offsiteCardHTML(o){
+  o=o||{};
+  const keep=set=>set?'leave blank to keep':'';
+  const noid=!o.id;
+  return '<div class="card ocard" data-id="'+esc(o.id||"")+'" style="margin-bottom:12px">'
+    +'<div class="setgrid">'
+    +'<div><label class="sub">Label</label><input class="f-label" type="text" value="'+esc(o.label||"")+'" placeholder="e.g. Hetzner box"></div>'
+    +'<div style="grid-column:1/-1"><label class="sub">Repository <span class="help" tabindex="0" data-tip="restic URL. S3: s3:https://ENDPOINT/BUCKET. SFTP (e.g. Hetzner Storage Box): sftp://USER@HOST:PORT/PATH, with the SSH key in &lt;data&gt;/ssh and the S3 keys left empty.">ⓘ</span></label><input class="f-repo" type="text" value="'+esc(o.repository||"")+'" placeholder="s3:https://ENDPOINT/BUCKET or sftp://USER@HOST:PORT/PATH"></div>'
+    +'<div><label class="sub">Repo password '+(o.id?(o.password_set?'(set)':'(not set)'):'')+'</label><input class="f-pw" type="password" autocomplete="new-password" placeholder="'+keep(o.password_set)+'"></div>'
+    +'<div><label class="sub">S3 access key ID</label><input class="f-key" type="text" value="'+esc(o.s3_access_key_id||"")+'"></div>'
+    +'<div><label class="sub">S3 secret access key '+(o.id?(o.secret_set?'(set)':'(not set)'):'')+'</label><input class="f-secret" type="password" autocomplete="new-password" placeholder="'+keep(o.secret_set)+'"></div>'
+    +'<div><label class="sub">Upload limit (KiB/s, 0 = unlimited) <span class="sub">2000 ≈ 2 MB/s</span></label><input class="f-up" type="text" value="'+(o.limit_upload_kibps||0)+'"></div>'
+    +'<div><label class="sub">Download limit (KiB/s, 0 = unlimited)</label><input class="f-down" type="text" value="'+(o.limit_download_kibps||0)+'"></div>'
+    +'</div>'
+    +'<div class="bar" style="margin-top:10px">'
+    +'<label><input class="f-def" type="checkbox"'+(o.default?' checked':'')+'> Use for new clients</label>'
+    +'<button class="secondary" onclick="testOffsite(this)"'+(noid?' disabled title="Save settings first"':'')+'>Test</button>'
+    +'<button class="secondary" onclick="initOffsite(this)"'+(noid?' disabled title="Save settings first"':'')+'>Initialize</button>'
+    +'<button class="mini danger" onclick="removeOffsite(this)">Remove</button>'
+    +'</div></div>';
+}
+function renderOffsite(list){
+  list=list||[];
+  $("#offsiteList").innerHTML=list.length ? list.map(offsiteCardHTML).join("") : '<div class="sub" id="offsiteNone">No offsite storage configured: backups exist only on this server.</div>';
+}
+function addOffsite(){
+  const n=$("#offsiteNone"); if(n) n.remove();
+  $("#offsiteList").insertAdjacentHTML("beforeend",offsiteCardHTML());
+  $("#offsiteList").lastElementChild.querySelector(".f-label").focus();
+}
+// The cards as the API's offsite list. A new card left completely empty is dropped.
+function collectOffsite(){
+  const num=v=>parseInt(v,10)||0;
+  return [...document.querySelectorAll("#offsiteList .ocard")].map(el=>({
+    id:el.dataset.id||undefined, label:ocField(el,"label").value.trim(), default:ocField(el,"def").checked,
+    repository:ocField(el,"repo").value.trim(), password:ocField(el,"pw").value,
+    s3_access_key_id:ocField(el,"key").value.trim(), s3_secret_access_key:ocField(el,"secret").value,
+    limit_upload_kibps:num(ocField(el,"up").value), limit_download_kibps:num(ocField(el,"down").value)
+  })).filter(o=>o.id||o.label||o.repository);
+}
+async function removeOffsite(btn){
+  const el=btn.closest(".ocard"), label=ocField(el,"label").value.trim()||"this storage";
+  if(!confirm('Remove "'+label+'" from hoard? The data stored there is not deleted.')) return;
+  const had=!!el.dataset.id;
+  el.remove();
+  if(had) await saveConfig(); else if(!document.querySelector("#offsiteList .ocard")) renderOffsite([]);
+}
+// Test/Initialize persist the form FIRST, so they act on exactly what's typed.
+async function testOffsite(btn){
+  const el=btn.closest(".ocard"), id=el.dataset.id, label=ocField(el,"label").value.trim()||id;
   $("#cfgMsg").textContent="saving settings…";
   if(!(await saveConfig())) return;              // don't test against unsaved edits
-  $("#cfgMsg").textContent="testing storage…";
+  $("#cfgMsg").textContent="testing "+label+"…";
   try{
-    const j=await (await fetch("/api/config/test-cold",{method:"POST"})).json();
-    $("#cfgMsg").textContent=j.ok?"storage reachable ✓":("storage error: "+(j.error||"unreachable"));
+    const j=await (await fetch("/api/config/test-offsite?id="+encodeURIComponent(id),{method:"POST"})).json();
+    $("#cfgMsg").textContent=j.ok?(label+": storage reachable ✓"):(label+": storage error: "+(j.error||"unreachable"));
   }catch(e){ $("#cfgMsg").textContent="test failed"; }
+}
+async function initOffsite(btn){
+  const el=btn.closest(".ocard"), id=el.dataset.id, label=ocField(el,"label").value.trim()||id;
+  if(!confirm('Initialize a fresh restic repository for "'+label+'"?\n\nThis saves the settings you\'ve entered, then creates the repo. Only do this for a NEW, EMPTY bucket or folder — it\'s a no-op if a repo already exists there. Store the repo password somewhere safe: losing it makes the backups unrecoverable.')) return;
+  $("#cfgMsg").textContent="saving settings…";
+  if(!(await saveConfig())) return;              // persist the typed repo/keys/password first
+  $("#cfgMsg").textContent="initializing "+label+"…";
+  try{
+    const j=await (await fetch("/api/config/init-offsite?id="+encodeURIComponent(id),{method:"POST"})).json();
+    $("#cfgMsg").textContent=j.ok?(label+": repository ready ✓ (initialized or already existed)"):(label+": init error: "+(j.error||"failed"));
+  }catch(e){ $("#cfgMsg").textContent="init failed"; }
 }
 async function testEmail(){
   $("#cfgEmailMsg").textContent="saving settings…";
@@ -949,16 +1072,6 @@ async function testEmail(){
     $("#cfgEmailMsg").textContent=j.ok?"sent ✓ — check your inbox":("error: "+(j.error||"failed"));
   }catch(e){ $("#cfgEmailMsg").textContent="test failed"; }
 }
-async function initCold(){
-  if(!confirm("Initialize a fresh restic repository in the configured bucket?\n\nThis saves the endpoint, keys, and repo password you've entered, then creates the repo. Only do this for a NEW, EMPTY bucket — it's a no-op if a repo already exists there. Store the repo password somewhere safe: losing it makes the backups unrecoverable.")) return;
-  $("#cfgMsg").textContent="saving settings…";
-  if(!(await saveConfig())) return;              // persist the typed repo/keys/password first
-  $("#cfgMsg").textContent="initializing repository…";
-  try{
-    const j=await (await fetch("/api/config/init-cold",{method:"POST"})).json();
-    $("#cfgMsg").textContent=j.ok?"repository ready ✓ (initialized or already existed)":("init error: "+(j.error||"failed"));
-  }catch(e){ $("#cfgMsg").textContent="init failed"; }
-}
 loadConfig();
 
 // ---------------- Running backups (all clients) ----------------
@@ -966,7 +1079,7 @@ function hDur(s){s=Math.max(0,Math.round(s||0));if(s<60)return s+"s";const m=Mat
 function actionClass(line){const a=(line.split(/\s+/)[0]||"").toLowerCase();
   if(a==="new")return"a-new";if(a==="changed")return"a-changed";if(a==="unchanged"||a==="unmodified")return"a-unchanged";
   if(a==="error")return"a-error";if(line.startsWith("—"))return"a-meta";return"";}
-function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 async function rctrl(host,action){
   await fetch("/api/clients/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host,action})});
   setTimeout(loadRunning,400);

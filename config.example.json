@@ -7,13 +7,32 @@
     "password": "set-via-HOARD_HOT_PASSWORD-env"
   },
 
-  "cold": {
-    "repository": "s3:https://x0x0.va.idrivee2-1.com/my-backup-bucket",
-    "password": "set-via-HOARD_COLD_PASSWORD-env",
-    "s3_access_key_id": "set-via-HOARD_COLD_S3_ACCESS_KEY_ID-env",
-    "s3_secret_access_key": "set-via-HOARD_COLD_S3_SECRET_ACCESS_KEY-env",
-    "limit_upload_kibps": 0,
-    "limit_download_kibps": 0
+  "offsite": [
+    {
+      "id": "e2",
+      "label": "IDrive e2",
+      "default": true,
+      "repository": "s3:https://x0x0.va.idrivee2-1.com/my-backup-bucket",
+      "password": "set-via-HOARD_COLD_PASSWORD-env",
+      "s3_access_key_id": "set-via-HOARD_COLD_S3_ACCESS_KEY_ID-env",
+      "s3_secret_access_key": "set-via-HOARD_COLD_S3_SECRET_ACCESS_KEY-env",
+      "limit_upload_kibps": 0,
+      "limit_download_kibps": 0
+    },
+    {
+      "id": "hetzner-box",
+      "label": "Hetzner box",
+      "default": false,
+      "repository": "sftp://u123456@u123456.your-storagebox.de:23/hoard",
+      "password": "repo-password-for-this-storage",
+      "limit_upload_kibps": 0,
+      "limit_download_kibps": 0
+    }
+  ],
+
+  "routing": {
+    "hourly-vm": ["hetzner-box"],
+    "scratch-box": []
   },
 
   "schedule": {
@@ -37,10 +56,6 @@
     "hosts": {
       "hourly-vm": { "keep_within": "48h", "keep_daily": 14, "keep_weekly": 8, "keep_monthly": 6 }
     }
-  },
-
-  "mirror": {
-    "exclude_hosts": ["hourly-vm"]
   },
 
   "alert": {

@@ -135,7 +135,7 @@ func TestNotifyFansOutToBoth(t *testing.T) {
 	defer closeFn()
 
 	cfg := config.NewStore(&config.Config{
-		Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"},
+		Hot: config.Repo{Repository: "/h"}, Offsite: []config.Offsite{{ID: "e2", Label: "e2", Default: true, Repo: config.Repo{Repository: "s3:x"}}},
 		Alert: config.Alert{WebhookURL: hook.URL},
 		SMTP:  config.SMTP{Host: host, Port: port, From: "a@x.com", To: "b@y.com"},
 	}, "")
@@ -157,7 +157,7 @@ func TestNotifyFansOutToBoth(t *testing.T) {
 }
 
 func TestSMTPConfigRoundTripWriteOnly(t *testing.T) {
-	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"}}, "")
+	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Offsite: []config.Offsite{{ID: "e2", Label: "e2", Default: true, Repo: config.Repo{Repository: "s3:x"}}}}, "")
 	st, _ := state.Load("")
 	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
 
@@ -186,7 +186,7 @@ func TestHandleTestEmail(t *testing.T) {
 	host, port, _, closeFn := startMockSMTP(t)
 	defer closeFn()
 	cfg := config.NewStore(&config.Config{
-		Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"},
+		Hot: config.Repo{Repository: "/h"}, Offsite: []config.Offsite{{ID: "e2", Label: "e2", Default: true, Repo: config.Repo{Repository: "s3:x"}}},
 		SMTP: config.SMTP{Host: host, Port: port, From: "a@x.com", To: "b@y.com"},
 	}, "")
 	st, _ := state.Load("")
@@ -199,7 +199,7 @@ func TestHandleTestEmail(t *testing.T) {
 	}
 
 	// Unconfigured → ok:false.
-	cfg2 := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"}}, "")
+	cfg2 := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Offsite: []config.Offsite{{ID: "e2", Label: "e2", Default: true, Repo: config.Repo{Repository: "s3:x"}}}}, "")
 	srv2 := New(cfg2, "restic", scheduler.New(cfg2, "restic", st, testLogger()), st, testLogger(), nil)
 	w = httptest.NewRecorder()
 	srv2.handleTestEmail(w, httptest.NewRequest(http.MethodPost, "/api/config/test-email", nil))

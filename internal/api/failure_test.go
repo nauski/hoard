@@ -35,9 +35,9 @@ func TestFailureAlertFiresOnceAtThreshold(t *testing.T) {
 	defer hook.Close()
 
 	cfg := config.NewStore(&config.Config{
-		Hot:   config.Repo{Repository: "/h"},
-		Cold:  config.Repo{Repository: "s3:x"},
-		Alert: config.Alert{WebhookURL: hook.URL, OnFailure: true, FailureThreshold: 3},
+		Hot:     config.Repo{Repository: "/h"},
+		Offsite: []config.Offsite{{ID: "e2", Label: "e2", Default: true, Repo: config.Repo{Repository: "s3:x"}}},
+		Alert:   config.Alert{WebhookURL: hook.URL, OnFailure: true, FailureThreshold: 3},
 	}, "")
 	st, _ := state.Load("")
 	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
@@ -74,7 +74,7 @@ func TestFailureAlertFiresOnceAtThreshold(t *testing.T) {
 }
 
 func TestStatusIncludesOutcomes(t *testing.T) {
-	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"}}, "")
+	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Offsite: []config.Offsite{{ID: "e2", Label: "e2", Default: true, Repo: config.Repo{Repository: "s3:x"}}}}, "")
 	st, _ := state.Load("")
 	st.SetOutcome("nas", state.Outcome{OK: false, Message: "boom", ConsecutiveFailures: 2})
 	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)

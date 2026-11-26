@@ -137,6 +137,7 @@ type offsiteStatus struct {
 	ID         string `json:"id"`
 	Label      string `json:"label"`
 	Repository string `json:"repository"`
+	Default    bool   `json:"default"`
 }
 
 // statusClient is a client plus where its snapshots go offsite: Offsite is the
@@ -198,7 +199,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	stores := make([]offsiteStatus, 0, len(cfg.Offsite))
 	for _, o := range cfg.Offsite {
-		stores = append(stores, offsiteStatus{o.ID, o.Label, redact(o.Repository)})
+		stores = append(stores, offsiteStatus{o.ID, o.Label, redact(o.Repository), o.Default})
 	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		Version:    version.Version,

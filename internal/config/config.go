@@ -24,8 +24,9 @@ type Config struct {
 	// Hot is the local repository clients push into via the restic REST server.
 	Hot Repo `json:"hot"`
 
-	// Cold is the offsite IDrive e2 (S3) repository the hot repo is mirrored to.
-	Cold Repo `json:"cold"`
+	// Cold is the legacy single offsite repository. Read for migration into
+	// Offsite, never written back.
+	Cold Repo `json:"cold,omitzero"`
 
 	// Offsite are the labelled offsite storages hot snapshots are mirrored to.
 	Offsite []Offsite `json:"offsite,omitempty"`
@@ -41,8 +42,9 @@ type Config struct {
 	// repo before it when Retention.ApplyToHot is set.
 	Retention Retention `json:"retention"`
 
-	// Mirror controls which hosts are copied hot -> cold.
-	Mirror Mirror `json:"mirror"`
+	// Mirror is the legacy hot-only host list. Read for migration into Routing,
+	// never written back.
+	Mirror Mirror `json:"mirror,omitzero"`
 
 	// Alert is where failure/staleness notifications are sent.
 	Alert Alert `json:"alert"`
@@ -179,14 +181,10 @@ func (s Schedule) StaleFor(host string) time.Duration {
 	return s.StaleAfter.Std()
 }
 
-// Mirror selects what the hot -> cold copy includes.
+// Mirror is the legacy mirror section, kept only so old configs migrate.
 type Mirror struct {
-	// ExcludeHosts are never copied offsite ("hot only").
 	ExcludeHosts []string `json:"exclude_hosts,omitempty"`
 }
-
-// Excludes reports whether host is kept hot-only.
-func (m Mirror) Excludes(host string) bool { return slices.Contains(m.ExcludeHosts, host) }
 
 // Retention maps to `restic forget` flags. It is applied per host: Hosts
 // overrides the top-level policy for the named hostnames.
@@ -334,8 +332,8 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
 	}
-	c.applyEnv()
 	c.migrateOffsite()
+	c.applyEnv()
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -355,17 +353,16 @@ func (c *Config) applyEnv() {
 	if c.Hot.Password == "" {
 		c.Hot.Password = os.Getenv("HOARD_HOT_PASSWORD")
 	}
-	if c.Cold.Repository == "" {
-		c.Cold.Repository = os.Getenv("HOARD_COLD_REPOSITORY")
-	}
-	if c.Cold.Password == "" {
-		c.Cold.Password = os.Getenv("HOARD_COLD_PASSWORD")
-	}
-	if c.Cold.S3AccessKeyID == "" {
-		c.Cold.S3AccessKeyID = os.Getenv("HOARD_COLD_S3_ACCESS_KEY_ID")
-	}
-	if c.Cold.S3SecretAccessKey == "" {
-		c.Cold.S3SecretAccessKey = os.Getenv("HOARD_COLD_S3_SECRET_ACCESS_KEY")
+	if len(c.Offsite) == 0 {
+		// Brand-new env-only deployment: seed the first storage.
+		if repo := os.Getenv("HOARD_COLD_REPOSITORY"); repo != "" {
+			o := Offsite{Label: "Offsite", Default: true, Repo: Repo{Repository: repo}}
+			o.ID = NewOffsiteID(o.Label, nil)
+			if strings.Contains(repo, "idrivee2") {
+				o.ID, o.Label = "e2", "IDrive e2"
+			}
+			c.Offsite = []Offsite{o}
+		}
 	}
 	if len(c.Offsite) > 0 {
 		o := &c.Offsite[0]

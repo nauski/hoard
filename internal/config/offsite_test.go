@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -110,5 +111,37 @@ func TestDuplicateStorageRejected(t *testing.T) {
 	  "offsite":[{"id":"a","label":"A","repository":"/x"},{"id":"a","label":"B","repository":"/y"}]}`), 0o600)
 	if _, err := Load(p); err == nil {
 		t.Fatal("duplicate storage id must be rejected")
+	}
+}
+
+func TestEnvOnlySeedsFirstStorage(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hoard.json")
+	os.WriteFile(p, []byte(`{"hot":{"repository":"/data/hot","password":"h"}}`), 0o600)
+	t.Setenv("HOARD_COLD_REPOSITORY", "sftp://u@h/p")
+	t.Setenv("HOARD_COLD_PASSWORD", "pw")
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Offsite) != 1 || c.Offsite[0].ID != "offsite" || c.Offsite[0].Label != "Offsite" ||
+		!c.Offsite[0].Default || c.Offsite[0].Repository != "sftp://u@h/p" || c.Offsite[0].Password != "pw" {
+		t.Fatalf("seeded = %+v", c.Offsite)
+	}
+}
+
+func TestSavedConfigHasNoLegacyKeys(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hoard.json")
+	os.WriteFile(p, []byte(`{"hot":{"repository":"/data/hot","password":"h"},
+	  "cold":{"repository":"s3:https://x/b","password":"c"},"mirror":{"exclude_hosts":["lab"]}}`), 0o600)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewStore(c, p).Update(func(*Config) {}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(p)
+	if bytes.Contains(raw, []byte(`"cold"`)) || bytes.Contains(raw, []byte(`"exclude_hosts"`)) || bytes.Contains(raw, []byte(`"mirror":{`)) {
+		t.Fatalf("legacy keys written: %s", raw)
 	}
 }

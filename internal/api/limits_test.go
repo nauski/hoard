@@ -34,7 +34,7 @@ func TestOffsiteLimitsRoundTrip(t *testing.T) {
 }
 
 func TestHandleRetentionPreview_BadBody(t *testing.T) {
-	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Cold: config.Repo{Repository: "s3:x"}}, "")
+	cfg := config.NewStore(&config.Config{Hot: config.Repo{Repository: "/h"}, Offsite: []config.Offsite{{ID: "e2", Label: "e2", Default: true, Repo: config.Repo{Repository: "s3:x"}}}}, "")
 	st, _ := state.Load("")
 	srv := New(cfg, "restic", scheduler.New(cfg, "restic", st, testLogger()), st, testLogger(), nil)
 

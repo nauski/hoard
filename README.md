@@ -8,8 +8,8 @@ with an embedded web UI, sitting in front of [restic](https://restic.net) and
 [IDrive e2](https://www.idrive.com/e2/) (S3-compatible object storage).
 
 Machines back up to the server; the server consolidates everything into a local
-(**hot**) repository, mirrors it offsite to IDrive e2 (**cold**) on a schedule,
-verifies both integrity **and that backups actually restore**, enforces retention,
+(**hot**) repository, mirrors it to one or more labelled **offsite storages** (S3, e.g.
+IDrive e2, or SFTP) on a schedule, verifies integrity **and that backups actually restore**, enforces retention,
 lets you **browse, restore, and clean up** what's stored, and **alerts you — by
 webhook or email — the moment a client goes stale or a job fails** — so a backup
 can never quietly rot for months.
@@ -37,21 +37,25 @@ can never quietly rot for months.
   │  schedule, browse,      │─push──▶│        │                                              │
   │  live progress          │        │   hoardd:  API + dashboard + scheduler + browser      │
   └─────────────────────────┘        │        │                                              │
-  ┌─ hoard-agent (laptop) ──┐        │        └── restic copy ─▶  COLD repo on IDrive e2 (S3) │
+  ┌─ hoard-agent (laptop) ──┐        │        └── restic copy ─▶  OFFSITE storages (S3 / SFTP) │
   │  … or plain restic      │─push──▶│                                                       │
   └─────────────────────────┘        └───────────────────────────────────────────────────────┘
 ```
 
 - **Hot repo** — a restic repository on your NAS pool. `rest-server` (bundled)
   gives clients an HTTP push target: `rest:http://server:8000/hot`.
-- **Cold repo** — a second, independent restic repo in an IDrive e2 bucket. The
-  server runs `restic copy` hot→cold on a schedule; both repos are separately
-  `restic check`-able, giving you two verifiable tiers (a 3-2-1-shaped setup).
+- **Offsite storages** — a list of labelled, independent restic repos (an S3
+  bucket, an SFTP box, a folder…), each with its own password and limits. The
+  server runs `restic copy` hot→storage on a schedule for every storage a host is
+  routed to; each repo is separately `restic check`-able, giving you verifiable
+  tiers (a 3-2-1-shaped setup). By default every host goes to the storages marked
+  "Use for new clients"; the **Offsite** button on a client row (or Manage) picks
+  other storages for that host, or none ("hot only").
 - **Server (`hoardd`)** — serves the API + dashboard, runs the scheduler
   (mirror / check / prune / freshness), the backup browser, and alerts.
 - **Agent (`hoard-agent`)** — per-machine web GUI to choose what to back up, run
   backups (with live progress), and browse/restore/clean up this machine's
-  backups. Delegates deletions to the server (the only side that can reach e2).
+  backups. Delegates deletions to the server (the only side that can reach the offsite storages).
 
 ## Components
 
@@ -91,7 +95,7 @@ can never quietly rot for months.
 - **Backup browser** — client → version → file tree → download, restore, or delete;
   **diff** any version against the previous to see exactly what changed.
 - **Delete that actually frees space** — remove a file from one version or from
-  **all versions**, across *both* hot and e2, with a type-to-confirm guard — and a
+  **all versions**, across hot *and* every offsite storage, with a type-to-confirm guard — and a
   **retention preview** that dry-runs exactly which snapshots a policy would forget
   before you apply it.
 - **Staleness & failure alerts** — webhook **or email (SMTP)**, when a client goes
@@ -124,8 +128,8 @@ just that version, or from **every** version to reclaim the space for good.
 </picture>
 
 Because your data lives in two repos, deleting "from all versions" runs
-`restic rewrite --exclude` + `prune` on **both** the hot repo and e2 — otherwise
-the next mirror would copy the file straight back, or e2 would keep holding it.
+`restic rewrite --exclude` + `prune` on the hot repo **and** every offsite storage — otherwise
+the next mirror would copy the file straight back, or an offsite copy would keep holding it.
 The irreversible option makes you type the filename to confirm:
 
 <picture>
@@ -139,7 +143,7 @@ Each machine runs `hoard-agent`, a local web GUI (default `http://127.0.0.1:7420
 Pick folders with the browser, set a daily time (`21:00`) or an interval (`1h`; a
 run missed while the machine was asleep or off starts as soon as it is back), hit **Back up now**, and watch
 live progress. The same backup browser is here too, scoped to this machine — and
-its deletes are delegated to the server so they hit e2 as well.
+its deletes are delegated to the server so they hit the offsite storages as well.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/hoard-agent-dashboard-dark.png">
@@ -162,7 +166,7 @@ backing up, each with the same live feed and controls. Pause or cancel a remote
 client's backup right from here. Since agents bind localhost-only, control travels
 back on the status reports each agent already sends the server every second.
 
-The server's **own** jobs get the same visibility: kick off a mirror to e2 or an
+The server's **own** jobs get the same visibility: kick off an offsite mirror or an
 integrity check and you get a live **packs-based progress bar, elapsed, ETA, a
 streaming restic terminal, and a Cancel button** — no more staring at a bare
 spinner wondering whether a 30 GB offsite copy is halfway done or stuck.
@@ -174,8 +178,9 @@ spinner wondering whether a 30 GB offsite copy is halfway done or stuck.
 
 ## Quick start — server (Docker / TrueNAS)
 
-1. **Create an IDrive e2 bucket** and an access key. Note the S3 endpoint, e.g.
-   `s3:https://s3.<region>.idrivee2.com/<bucket>`.
+1. **Create an offsite bucket** (for example on IDrive e2) and an access key. Note
+   the S3 endpoint, e.g. `s3:https://s3.<region>.idrivee2.com/<bucket>`. More
+   storages can be added later in the dashboard (Settings → Offsite storage).
 
 2. **Write `config.json`** (see `config.example.json`). Keep secrets out of the
    file and pass them as env vars instead.
@@ -203,7 +208,15 @@ spinner wondering whether a 30 GB offsite copy is halfway done or stuck.
 
    Mount your `config.json` at `/data/hoard.json` (or rely on env + defaults).
 
-4. **Initialize the repos once** (creates hot + cold if missing):
+   `HOARD_COLD_*` only **seed the first offsite storage on a new install**; after
+   that the storages live in the config file and the dashboard.
+
+   **SFTP instead of S3** (for example a Hetzner Storage Box): set the storage's
+   repository to `sftp://USER@HOST:23/hoard`, leave the S3 keys empty, and put
+   an SSH key (`id_ed25519`) and `known_hosts` in `<data>/ssh`. The container
+   links that folder to `/root/.ssh` at start.
+
+4. **Initialize the repos once** (creates the hot repo and every offsite storage if missing):
 
    ```sh
    docker exec -it hoard hoardd -config /data/hoard.json -init
@@ -354,12 +367,16 @@ All fields are in `config.example.json`. Highlights:
   whatever old snapshots have accumulated there (preview shows them first). With
   it off, snapshots the offsite repo has forgotten but hot still holds are copied
   again at the next mirror, so turn it on if you want offsite retention to stick.
-- `mirror.exclude_hosts` — hosts that are never copied offsite ("hot only" on the
-  dashboard, and listed in the recovery kit). Snapshots of such a host that were
-  mirrored before you excluded it stay offsite until retention or a delete
-  removes them.
-- `cold.limit_upload_kibps` / `limit_download_kibps` — transfer caps in KiB/s for
-  the offsite mirror (`0` = unlimited); each agent has the same knobs for its push.
+- `offsite` — the list of offsite storages: `id` (set once from the label, never
+  changed), `label`, `default` (receives hosts without a routing entry),
+  `repository`, `password`, `s3_access_key_id`, `s3_secret_access_key`,
+  `limit_upload_kibps` / `limit_download_kibps` (transfer caps in KiB/s for that
+  storage's mirror, `0` = unlimited; each agent has the same knobs for its push).
+- `routing` — per host, the storage ids it is copied to, e.g. `{"lab": []}` keeps
+  `lab` hot-only. A host without an entry goes to every `default` storage. Snapshots
+  copied before a storage was unticked stay there until retention or a delete
+  removes them. An old `cold` / `mirror.exclude_hosts` config is migrated into this
+  shape on first start and not written back.
 - `anomaly.files` / `anomaly.percent` — mass-deletion alert (defaults `10000` /
   `50`, `0` = off). When a host's newest backup has that many fewer files than the
   one before it (or that share of them), hoard alerts, flags the client on the
@@ -405,9 +422,10 @@ is set, never the value.
 | `POST /api/restore` | Restore a snapshot / path to a destination. |
 | `POST /api/actions/mirror` · `check` | Trigger a mirror or integrity check now (202, or 409 if busy). |
 | `POST /api/actions/cancel` | Cancel the running server job (409 if idle). |
-| `POST /api/purge` | Remove a path from one version or all versions of a `host`, across hot + cold. |
-| `POST /api/delete-version` | Delete one whole snapshot (hot + e2 twin). |
-| `GET/POST /api/config` (+ `/config/{retention-preview,test-cold,init-cold,test-email,ack-kit}`) | Read/update settings; preview retention; test/init offsite; send a test email; ack the recovery kit. |
+| `POST /api/purge` | Remove a path from one version or all versions of a `host`, across hot + every offsite storage. |
+| `POST /api/delete-version` | Delete one whole snapshot (hot + its offsite twins). |
+| `GET/POST /api/config` (+ `/config/{retention-preview,test-offsite,init-offsite,test-email,ack-kit}`) | Read/update settings; preview retention; test/init offsite; send a test email; ack the recovery kit. |
+| `POST /api/clients/offsite` | Set which offsite storages a host goes to (`storages`: ids, or `null` for the defaults). |
 | `POST /api/enroll/mint` · `redeem` | Mint / redeem a single-use client enrollment token. |
 | `POST /api/clients/control` · `GET /api/running` | Pause/resume/cancel a client's backup; live cross-client running view. |
 | `GET /healthz` | Liveness. |

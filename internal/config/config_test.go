@@ -60,14 +60,10 @@ func TestRetentionForAndValidate(t *testing.T) {
 	}
 }
 
-func TestStaleForAndMirrorExcludes(t *testing.T) {
+func TestStaleFor(t *testing.T) {
 	s := Schedule{StaleAfter: Duration(26 * time.Hour), StaleAfterHosts: map[string]Duration{"vm": Duration(3 * time.Hour)}}
 	if s.StaleFor("vm") != 3*time.Hour || s.StaleFor("desktop") != 26*time.Hour {
 		t.Fatalf("StaleFor: vm=%v desktop=%v", s.StaleFor("vm"), s.StaleFor("desktop"))
-	}
-	m := Mirror{ExcludeHosts: []string{"vm"}}
-	if !m.Excludes("vm") || m.Excludes("desktop") {
-		t.Fatal("Mirror.Excludes wrong")
 	}
 }
 
