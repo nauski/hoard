@@ -48,8 +48,8 @@ can never quietly rot for months.
   bucket, an SFTP box, a folder…), each with its own password and limits. The
   server runs `restic copy` hot→storage on a schedule for every storage a host is
   routed to; each repo is separately `restic check`-able, giving you verifiable
-  tiers (a 3-2-1-shaped setup). By default every host goes to the storages marked
-  "Use for new clients"; the **Offsite** button on a client row (or Manage) picks
+  tiers (a 3-2-1-shaped setup). A host without a choice of its own follows the defaults: it
+  goes to every storage ticked "Use for every client that follows the defaults"; the **Offsite** button on a client row (or Manage) picks
   other storages for that host, or none ("hot only").
 - **Server (`hoardd`)** — serves the API + dashboard, runs the scheduler
   (mirror / check / prune / freshness), the backup browser, and alerts.

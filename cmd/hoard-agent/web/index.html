@@ -220,7 +220,7 @@
       <div class="mono sub" id="delPath">—</div>
       <div style="margin-top:12px">
         <label><input type="radio" name="delscope" value="version" checked onchange="onScope()"> <span>From <b>this version only</b> — stays in other snapshots.</span></label>
-        <label><input type="radio" name="delscope" value="all" onchange="onScope()"> <span>From <b class="danger-text">ALL versions</b> — permanently removes it everywhere (hot + e2) and reclaims space. <b class="danger-text">Cannot be undone.</b></span></label>
+        <label><input type="radio" name="delscope" value="all" onchange="onScope()"> <span>From <b class="danger-text">ALL versions</b> — permanently removes it everywhere (this server and every offsite storage) and reclaims space. <b class="danger-text">Cannot be undone.</b></span></label>
       </div>
       <div id="delConfirmWrap" style="display:none;margin-top:10px">
         <span class="sub">Type the filename <b class="mono" id="delConfirmName"></b> to confirm:</span>
@@ -328,19 +328,19 @@ async function browseGo(path){
   try{
     const r=await fetch("/api/browse?path="+encodeURIComponent(path||""));
     const d=await r.json();
-    if(!r.ok){ $("#mlist").innerHTML='<div class="sub" style="padding:12px">'+(d.error||"can\'t read folder")+'</div>'; return; }
+    if(!r.ok){ $("#mlist").innerHTML='<div class="sub" style="padding:12px">'+esc(d.error||"can\'t read folder")+'</div>'; return; }
     browseCur=d.path; browseParent=d.parent||""; browseHome=d.home||"";
     $("#crumb").value=d.path; $("#mcur").textContent=d.path;
     const have=browseMode==="pick"?null:existingPaths();
     const rows=(d.entries||[]).map(e=>{
-      const nav=`onclick="browseGo('${e.path.replace(/'/g,"\\'")}')"`;
-      const label=`<span ${nav} style="flex:1;display:flex;gap:8px;align-items:center;overflow:hidden">📁 <span class="nm">${e.name}</span></span>`;
+      const p=esc(e.path);
+      const label=`<span data-path="${p}" onclick="browseGo(this.dataset.path)" style="flex:1;display:flex;gap:8px;align-items:center;overflow:hidden">📁 <span class="nm">${esc(e.name)}</span></span>`;
       if(browseMode==="pick"){
-        return `<div class="ditem">${label}<button class="addbtn" onclick="choosePath('${e.path.replace(/'/g,"\\'")}')">Choose</button></div>`;
+        return `<div class="ditem">${label}<button class="addbtn" data-path="${p}" onclick="choosePath(this.dataset.path)">Choose</button></div>`;
       }
       const added=have.has(e.path);
       return `<div class="ditem">${label}`+
-        (added?'<span class="sub">added ✓</span>':`<button class="addbtn" onclick="addPath('${e.path.replace(/'/g,"\\'")}')">+ Add</button>`)+`</div>`;
+        (added?'<span class="sub">added ✓</span>':`<button class="addbtn" data-path="${p}" onclick="addPath(this.dataset.path)">+ Add</button>`)+`</div>`;
     }).join("");
     $("#mlist").innerHTML = rows || '<div class="sub" style="padding:12px">no subfolders here</div>';
   }catch(e){ $("#mlist").innerHTML='<div class="sub" style="padding:12px">error reading folder</div>'; }
@@ -390,7 +390,8 @@ async function save(){
     schedule:$("#sched").value.trim(), paths:readList("paths"), excludes:readList("excludes"),
     limit_upload_kibps:(parseInt($("#limUp").value,10)||0), limit_download_kibps:(parseInt($("#limDown").value,10)||0),
     notify_desktop: $("#notify").checked };
-  if(offKey!==null) body.offsite=[...document.querySelectorAll("#offsite input:checked:not(:disabled)")].map(i=>i.value);
+  // A storage the server assigns is locked; keep it in the wish when it was already saved there.
+  if(offKey!==null) body.offsite=[...document.querySelectorAll("#offsite input:checked")].filter(i=>!i.disabled||cfgOffsite.includes(i.value)).map(i=>i.value);
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   let err="save failed";
   if(!r.ok){ try{ err=(await r.json()).error||err; }catch(e){} }
@@ -417,11 +418,12 @@ function actionClass(line){
   if(a==="unchanged"||a==="unmodified")return"a-unchanged"; if(a==="error")return"a-error";
   if(line.startsWith("—"))return"a-meta"; return"";
 }
-function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 // Offsite storage checkboxes. Redrawn only when the server's list changes, so a
 // tick the user has not saved yet survives the 5s status refresh.
-let offKey=null;
+let offKey=null, cfgOffsite=[];
 function renderOffsite(st){
+  cfgOffsite=(st.config&&st.config.offsite)||[];
   const stores=st.offsite_storages, srv=st.offsite_server||[], box=$("#offsite");
   const key=JSON.stringify([stores,srv]);
   if(stores===null||stores===undefined||key===offKey) return;
@@ -430,7 +432,7 @@ function renderOffsite(st){
   if(!stores.length){ box.innerHTML='<div class="sub">The server has no offsite storage.</div>'; return; }
   box.innerHTML=stores.map(o=>{
     const req=srv.includes(o.id), on=req||mine.has(o.id);
-    return '<label class="check"><input type="checkbox" value="'+esc(o.id).replace(/"/g,"&quot;")+'"'+(on?" checked":"")+(req?" disabled":"")+' /> '+esc(o.label)
+    return '<label class="check"><input type="checkbox" value="'+esc(o.id)+'"'+(on?" checked":"")+(req?" disabled":"")+' /> '+esc(o.label)
       +(req?' <span class="sub">required by the server</span>':'')+'</label>';
   }).join("");
 }
@@ -602,14 +604,14 @@ function renderVersions(){
     const added=s.summary&&s.summary.data_added?" <span class='sub'>(+"+hBytes(s.summary.data_added)+" new)</span>":"";
     return `<div class="vrow" ${sel}>
       <div class="vmeta">
-        <div class="vhead"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added}</div>
+        <div class="vhead"><span class="mono">${esc(s.short_id)}</span> · ${fmt(s.time)} · <b>${sz}</b>${added}</div>
         <div class="vpaths sub">${esc((s.paths||[]).join(", "))}</div>
       </div>
       <div class="vacts">
-        <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
-        <button class="mini act" onclick="startRestore('${s.short_id}')">Restore…</button>
-        <button class="mini danger" onclick="restoreInPlace('${s.short_id}')">Restore in place…</button>
-        <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
+        <button class="mini act" data-id="${esc(s.short_id)}" onclick="browseVersion(this.dataset.id)">Browse</button>
+        <button class="mini act" data-id="${esc(s.short_id)}" onclick="startRestore(this.dataset.id)">Restore…</button>
+        <button class="mini danger" data-id="${esc(s.short_id)}" onclick="restoreInPlace(this.dataset.id)">Restore in place…</button>
+        <button class="mini danger" data-id="${esc(s.short_id)}" onclick="deleteVersion(this.dataset.id)">Delete version</button>
       </div>
     </div>`;
   }).join("");
@@ -643,23 +645,23 @@ async function browseSnap(dir){
   bDir=dir;
   const r=await fetch("/api/ls?id="+encodeURIComponent(bSnap)+"&path="+encodeURIComponent(dir));
   const entries=await r.json();
-  if(!r.ok){ $("#bFiles").innerHTML='<div class="sub">'+(entries.error||"error")+'</div>'; return; }
+  if(!r.ok){ $("#bFiles").innerHTML='<div class="sub">'+esc(entries.error||"error")+'</div>'; return; }
   bEntries = Array.isArray(entries) ? entries : [];
   renderFiles();
 }
 function renderFiles(){
-  const up=bDir!=="/"?`<button class="mini" onclick="browseSnap('${parentDir(bDir).replace(/'/g,"\\'")}')">↑ up</button>`:"";
+  const up=bDir!=="/"?`<button class="mini" data-dir="${esc(parentDir(bDir))}" onclick="browseSnap(this.dataset.dir)">↑ up</button>`:"";
   const rows=bEntries.map(e=>{
-    if(e.type==="dir") return `<div class="frow"><span class="nm" style="cursor:pointer" onclick="browseSnap('${e.path.replace(/'/g,"\\'")}')">📁 ${e.name}</span></div>`;
-    return `<div class="frow"><span class="nm">📄 ${e.name} <span class="sub">${hBytes(e.size)}</span></span>
+    if(e.type==="dir") return `<div class="frow"><span class="nm" style="cursor:pointer" data-dir="${esc(e.path)}" onclick="browseSnap(this.dataset.dir)">📁 ${esc(e.name)}</span></div>`;
+    return `<div class="frow"><span class="nm">📄 ${esc(e.name)} <span class="sub">${hBytes(e.size)}</span></span>
       <a class="mini act" href="/api/download?id=${encodeURIComponent(bSnap)}&path=${encodeURIComponent(e.path)}">⬇ download</a>
-      <button class="mini danger" onclick='openDel(${JSON.stringify(e.path)},${JSON.stringify(e.name)})'>🗑 delete</button></div>`;
+      <button class="mini danger" data-path="${esc(e.path)}" data-name="${esc(e.name)}" onclick="openDel(this.dataset.path,this.dataset.name)">🗑 delete</button></div>`;
   }).join("");
-  $("#bFiles").innerHTML=`<div class="bar" style="margin-bottom:8px">${up}<span class="crumb">${bDir}</span><span class="sub mono">${bSnap}</span></div>`+(rows||'<div class="sub">empty folder</div>');
+  $("#bFiles").innerHTML=`<div class="bar" style="margin-bottom:8px">${up}<span class="crumb">${esc(bDir)}</span><span class="sub mono">${esc(bSnap)}</span></div>`+(rows||'<div class="sub">empty folder</div>');
 }
 function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=0?"/":d.slice(0,i); }
 function deleteVersion(id){
-  if(!confirm("Delete the ENTIRE version "+id+" from hot + e2?\nOther versions are unaffected.")) return;
+  if(!confirm("Delete the ENTIRE version "+id+" from this server and every offsite storage?\nOther versions are unaffected.")) return;
   // Optimistic: drop the row, mark pending so no reload resurrects it.
   pendingDel.add(id);
   bSnaps=bSnaps.filter(s=>s.short_id!==id); renderVersions();

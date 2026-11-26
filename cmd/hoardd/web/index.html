@@ -522,12 +522,12 @@ async function refresh(){
         + (c.own_repo ? ' <span class="badge b-idle" title="This machine has its own repository and login; other machines cannot read its backups">own repo</span>' : (st.private_repos ? ' <span class="badge b-warn" title="Still on the shared repo, which clients can no longer reach. Enroll this machine again to give it its own repository.">shared repo: re-enroll</span>' : ''))
         + ' ' + offsiteBadges(c);
       const manageBtn = ' <button class="mini" data-host="'+esc(c.hostname)+'" onclick="openOffsite(this.dataset.host)">Offsite</button>'
-        + (c.own_repo ? ' <button class="mini" onclick="openManage(\''+esc(c.hostname)+'\')">Manage</button>' : '');
+        + (c.own_repo ? ' <button class="mini" data-host="'+esc(c.hostname)+'" onclick="openManage(this.dataset.host)">Manage</button>' : '');
       const seenLine = c.seen_at ? '<div class="sub">agent '+esc(c.agent_version||"?")+' · checked in '+age(c.seen_at)+' ago'+(c.managed?' · managed here':'')+'</div>' : '';
       const an = c.anomaly;
       const anCell = an ? '<div style="margin-top:4px"><span class="badge b-bad" title="The newest backup has far fewer files than the one before it">'+(an.files_before-an.files_after)+' files vanished</span> '
-        + '<button class="mini" onclick="reviewAnomaly(\''+esc(c.hostname)+'\',\''+esc(an.new_id)+'\',\''+esc(an.prev_id)+'\')">Review</button> '
-        + '<button class="mini" onclick="dismissAnomaly(\''+esc(c.hostname)+'\')">Dismiss</button>'
+        + '<button class="mini" data-host="'+esc(c.hostname)+'" data-new="'+esc(an.new_id)+'" data-prev="'+esc(an.prev_id)+'" onclick="reviewAnomaly(this.dataset.host,this.dataset.new,this.dataset.prev)">Review</button> '
+        + '<button class="mini" data-host="'+esc(c.hostname)+'" onclick="dismissAnomaly(this.dataset.host)">Dismiss</button>'
         + '<div class="sub">'+an.files_before+' → '+an.files_after+' files · previous snapshot '+esc(an.prev_id)+(an.held?' is held':' not held yet (retrying)')+'</div></div>' : '';
       const o = (st.outcomes||{})[c.hostname];
       let runCell = '<span class="sub">—</span>';
@@ -537,8 +537,8 @@ async function refresh(){
           ? '<span style="color:var(--ok)">✓ ok</span>'
           : '<span style="color:var(--bad)">✗ failed'+(o.consecutive_failures>1?(' ×'+o.consecutive_failures):'')+'</span><div class="sub" title="'+esc(raw).replace(/"/g,'&quot;')+'">'+esc(raw.slice(0,60))+'</div>';
       }
-      return `<tr><td><span class="mono">${c.hostname}</span>${manageBtn}${seenLine}</td><td>${never?"never":fmt(c.last_snapshot)}</td>
-        <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${(c.paths||[]).join(", ")}</td><td>${st2}${anCell}${compliance}</td><td>${runCell}</td></tr>`;
+      return `<tr><td><span class="mono">${esc(c.hostname)}</span>${manageBtn}${seenLine}</td><td>${never?"never":fmt(c.last_snapshot)}</td>
+        <td>${age(c.last_snapshot)}</td><td><b>${c.size?hBytes(c.size):"—"}</b></td><td class="sub mono">${esc((c.paths||[]).join(", "))}</td><td>${st2}${anCell}${compliance}</td><td>${runCell}</td></tr>`;
     }).join("") : '<tr><td colspan="7" class="sub">no client snapshots yet</td></tr>';
   }catch(e){ /* transient */ }
 
@@ -548,7 +548,7 @@ async function refresh(){
     $("#history").innerHTML = rows.length ? rows.map(h=>{
       const dur = ((new Date(h.ended_at)-new Date(h.started_at))/1000).toFixed(1)+"s";
       return `<tr><td>${esc(jobTitle(h))}</td><td>${fmt(h.started_at)}</td><td>${dur}</td>
-        <td>${badge(h.ok)}</td><td class="sub">${(h.message||"").slice(0,80)}</td></tr>`;
+        <td>${badge(h.ok)}</td><td class="sub">${esc((h.message||"").slice(0,80))}</td></tr>`;
     }).join("") : '<tr><td colspan="5" class="sub">no jobs recorded</td></tr>';
   }catch(e){}
 }
@@ -589,7 +589,7 @@ async function loadClients(){
     const st=await (await fetch("/api/status")).json();
     const hosts=Object.keys(st.clients||{}).sort();
     const sel=$("#bClient"); const cur=sel.value;
-    sel.innerHTML='<option value="">— select a client —</option>'+hosts.map(h=>`<option value="${h}">${h}</option>`).join("");
+    sel.innerHTML='<option value="">— select a client —</option>'+hosts.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join("");
     if(hosts.includes(cur)) sel.value=cur;
   }catch(e){}
 }
@@ -621,17 +621,17 @@ function renderVersions(){
     const sz = s.summary ? hBytes(s.summary.total_bytes_processed) : "—";
     const added = s.summary && s.summary.data_added ? " <span class='sub'>(+"+hBytes(s.summary.data_added)+" new)</span>" : "";
     const parent = bSnaps[i+1];
-    const diffBtn = parent ? `<button class="mini" onclick="showDiff('${s.short_id}','${parent.short_id}')">Changes</button>` : "";
+    const diffBtn = parent ? `<button class="mini" data-id="${esc(s.short_id)}" data-parent="${esc(parent.short_id)}" onclick="showDiff(this.dataset.id,this.dataset.parent)">Changes</button>` : "";
     const tags = s.tags||[];
     const note = (tags.find(t=>t.startsWith("note:"))||"").slice(5);
     const keep = ["pin","hold"].filter(t=>tags.includes(t)).map(t=>
-      ` <span class="badge b-warn" title="Kept regardless of retention until released">${t==="pin"?"pinned":"held"}${t==="pin"&&note?": "+esc(note):""}</span> <button class="mini" onclick="untag('${s.short_id}','${t}')">${t==="pin"?"Unpin":"Release"}</button>`).join("");
+      ` <span class="badge b-warn" title="Kept regardless of retention until released">${t==="pin"?"pinned":"held"}${t==="pin"&&note?": "+esc(note):""}</span> <button class="mini" data-id="${esc(s.short_id)}" data-tag="${t}" onclick="untag(this.dataset.id,this.dataset.tag)">${t==="pin"?"Unpin":"Release"}</button>`).join("");
     return `<div class="vrow" ${sel}>
-      <span class="nm"><span class="mono">${s.short_id}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${(s.paths||[]).join(", ")}</span>${keep}</span>
-      <button class="mini act" onclick="browseVersion('${s.short_id}')">Browse</button>
-      <button class="mini" onclick="startRestore('${s.short_id}')">Restore…</button>
+      <span class="nm"><span class="mono">${esc(s.short_id)}</span> · ${fmt(s.time)} · <b>${sz}</b>${added} <span class="sub">${esc((s.paths||[]).join(", "))}</span>${keep}</span>
+      <button class="mini act" data-id="${esc(s.short_id)}" onclick="browseVersion(this.dataset.id)">Browse</button>
+      <button class="mini" data-id="${esc(s.short_id)}" onclick="startRestore(this.dataset.id)">Restore…</button>
       ${diffBtn}
-      <button class="mini danger" onclick="deleteVersion('${s.short_id}')">Delete version</button>
+      <button class="mini danger" data-id="${esc(s.short_id)}" onclick="deleteVersion(this.dataset.id)">Delete version</button>
     </div>`;
   }).join("");
 }
@@ -763,21 +763,21 @@ async function browseDir(dir){
   bDir=dir;
   const r=await fetch("/api/ls?id="+encodeURIComponent(bSnap)+"&path="+encodeURIComponent(dir));
   const entries=await r.json();
-  if(!r.ok){ $("#bFiles").innerHTML='<div class="sub">'+(entries.error||"error")+'</div>'; return; }
+  if(!r.ok){ $("#bFiles").innerHTML='<div class="sub">'+esc(entries.error||"error")+'</div>'; return; }
   bEntries = Array.isArray(entries) ? entries : [];
   renderFiles();
 }
 function renderFiles(){
-  const up = bDir!=="/" ? `<button class="mini" onclick="browseDir('${parentDir(bDir).replace(/'/g,"\\'")}')">↑ up</button>` : "";
+  const up = bDir!=="/" ? `<button class="mini" data-dir="${esc(parentDir(bDir))}" onclick="browseDir(this.dataset.dir)">↑ up</button>` : "";
   const rows=bEntries.map(e=>{
     if(e.type==="dir"){
-      return `<div class="frow"><span class="nm" style="cursor:pointer" onclick="browseDir('${e.path.replace(/'/g,"\\'")}')">📁 ${e.name}</span></div>`;
+      return `<div class="frow"><span class="nm" style="cursor:pointer" data-dir="${esc(e.path)}" onclick="browseDir(this.dataset.dir)">📁 ${esc(e.name)}</span></div>`;
     }
-    return `<div class="frow"><span class="nm">📄 ${e.name} <span class="sub">${hBytes(e.size)}</span></span>
+    return `<div class="frow"><span class="nm">📄 ${esc(e.name)} <span class="sub">${hBytes(e.size)}</span></span>
       <a class="mini act" href="/api/download?id=${encodeURIComponent(bSnap)}&path=${encodeURIComponent(e.path)}">⬇ download</a>
-      <button class="mini danger" onclick='openDel(${JSON.stringify(e.path)},${JSON.stringify(e.name)})'>🗑 delete</button></div>`;
+      <button class="mini danger" data-path="${esc(e.path)}" data-name="${esc(e.name)}" onclick="openDel(this.dataset.path,this.dataset.name)">🗑 delete</button></div>`;
   }).join("");
-  $("#bFiles").innerHTML=`<div class="bar" style="margin-bottom:8px">${up}<span class="crumb">${bDir}</span><span class="sub mono">${bSnap}</span></div>`+
+  $("#bFiles").innerHTML=`<div class="bar" style="margin-bottom:8px">${up}<span class="crumb">${esc(bDir)}</span><span class="sub mono">${esc(bSnap)}</span></div>`+
     (rows||'<div class="sub">empty folder</div>');
 }
 function parentDir(d){ const i=d.replace(/\/+$/,"").lastIndexOf("/"); return i<=0?"/":d.slice(0,i); }
@@ -987,7 +987,7 @@ async function previewRetention(){
       const list=(snaps||[]).slice(0,20).map(s=>esc(s.short_id)+" · "+esc(s.hostname||"")+" · "+new Date(s.time).toLocaleString()).join("<br>");
       return "<b>"+where+": would forget "+count+" snapshot"+(count>1?"s":"")+"</b> ("+hosts+")<br>"+list+(count>20?"<br>…":"")+"<br>";
     };
-    $("#retMsg").innerHTML=(j.offsite||[]).map(o=>part("Offsite "+esc(o.label),o.count,o.snapshots)).join("")+part("Hot repo",j.hot_count,j.hot_snapshots);
+    $("#retMsg").innerHTML=(j.offsite||[]).map(o=>o.error?"<b>Offsite "+esc(o.label)+":</b> error: "+esc(o.error)+"<br>":part("Offsite "+esc(o.label),o.count,o.snapshots)).join("")+part("Hot repo",j.hot_count,j.hot_snapshots);
   }catch(e){ $("#retMsg").textContent="preview failed"; }
 }
 // ---- offsite storage cards (Settings). A card without data-id is new: the
@@ -1009,7 +1009,7 @@ function offsiteCardHTML(o){
     +'<div><label class="sub">Download limit (KiB/s, 0 = unlimited)</label><input class="f-down" type="text" value="'+(o.limit_download_kibps||0)+'"></div>'
     +'</div>'
     +'<div class="bar" style="margin-top:10px">'
-    +'<label><input class="f-def" type="checkbox"'+(o.default?' checked':'')+'> Use for new clients</label>'
+    +'<label><input class="f-def" type="checkbox"'+(o.default?' checked':'')+'> Use for every client that follows the defaults <span class="help" tabindex="0" data-tip="Clients without their own choice are copied to every storage that has this ticked.">ⓘ</span></label>'
     +'<button class="secondary" onclick="testOffsite(this)"'+(noid?' disabled title="Save settings first"':'')+'>Test</button>'
     +'<button class="secondary" onclick="initOffsite(this)"'+(noid?' disabled title="Save settings first"':'')+'>Initialize</button>'
     +'<button class="mini danger" onclick="removeOffsite(this)">Remove</button>'
@@ -1036,10 +1036,12 @@ function collectOffsite(){
 }
 async function removeOffsite(btn){
   const el=btn.closest(".ocard"), label=ocField(el,"label").value.trim()||"this storage";
-  if(!confirm('Remove "'+label+'" from hoard? The data stored there is not deleted.')) return;
   const had=!!el.dataset.id;
+  // hosts whose only offsite copy is this storage
+  const lone=had?Object.values((lastStatus&&lastStatus.clients)||{}).filter(c=>(c.offsite||[]).length&&c.offsite.every(i=>i===el.dataset.id)).map(c=>c.hostname):[];
+  if(!confirm('Remove "'+label+'" from hoard? The data stored there is not deleted.'+(lone.length?'\n\nThese hosts will have no offsite copy afterwards: '+lone.join(", "):''))) return;
   el.remove();
-  if(had) await saveConfig(); else if(!document.querySelector("#offsiteList .ocard")) renderOffsite([]);
+  if(had){ if(!(await saveConfig())) loadConfig(); } else if(!document.querySelector("#offsiteList .ocard")) renderOffsite([]);
 }
 // Test/Initialize persist the form FIRST, so they act on exactly what's typed.
 async function testOffsite(btn){
@@ -1080,12 +1082,12 @@ function actionClass(line){const a=(line.split(/\s+/)[0]||"").toLowerCase();
   if(a==="new")return"a-new";if(a==="changed")return"a-changed";if(a==="unchanged"||a==="unmodified")return"a-unchanged";
   if(a==="error")return"a-error";if(line.startsWith("—"))return"a-meta";return"";}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
-async function rctrl(host,action){
+async function rctrl(btn,action){
+  const host=btn.closest(".rclient").dataset.host;
   await fetch("/api/clients/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host,action})});
   setTimeout(loadRunning,400);
 }
-function paintTerm(host,lines){
-  const term=document.getElementById("term-"+host); if(!term) return;
+function paintTerm(term,lines){
   const sig=lines.length+"|"+(lines[lines.length-1]||"");
   if(term.dataset.sig===sig) return; // content signature: length alone freezes when the ring buffer is full
   const atBottom=term.scrollHeight-term.scrollTop-term.clientHeight<40;
@@ -1106,31 +1108,32 @@ async function loadRunning(){
     const L=c.live, p=L.progress||{}, pct=Math.round((p.percent_done||0)*100);
     let el=document.getElementById("rc-"+c.host);
     if(!el){
-      el=document.createElement("div"); el.className="rclient"; el.id="rc-"+c.host;
-      el.innerHTML=`<h3><span class="mono" id="rh-${c.host}"></span> <span class="badge" id="rb-${c.host}"></span></h3>
-        <div class="pbar"><div class="pfill" id="rf-${c.host}"></div></div>
-        <div class="pstats"><span><b id="rp-${c.host}">0%</b> done</span><span>files <b id="rfl-${c.host}">0/0</b></span>
-          <span>data <b id="rby-${c.host}">0/0</b></span><span>elapsed <b id="rel-${c.host}">0s</b></span><span>ETA <b id="ret-${c.host}">—</b></span></div>
+      el=document.createElement("div"); el.className="rclient"; el.id="rc-"+c.host; el.dataset.host=c.host;
+      el.innerHTML=`<h3><span class="mono rh"></span> <span class="badge rb"></span></h3>
+        <div class="pbar"><div class="pfill rf"></div></div>
+        <div class="pstats"><span><b class="rp">0%</b> done</span><span>files <b class="rfl">0/0</b></span>
+          <span>data <b class="rby">0/0</b></span><span>elapsed <b class="rel">0s</b></span><span>ETA <b class="ret">—</b></span></div>
         <div class="ctrls">
-          <button class="mini2" id="rpause-${c.host}" onclick="rctrl('${c.host}','pause')">⏸ Pause</button>
-          <button class="mini2" id="rresume-${c.host}" style="display:none" onclick="rctrl('${c.host}','resume')">▶ Resume</button>
-          <button class="mini2 danger" onclick="rctrl('${c.host}','cancel')">✕ Cancel</button>
+          <button class="mini2 rpause" onclick="rctrl(this,'pause')">⏸ Pause</button>
+          <button class="mini2 rresume" style="display:none" onclick="rctrl(this,'resume')">▶ Resume</button>
+          <button class="mini2 danger" onclick="rctrl(this,'cancel')">✕ Cancel</button>
         </div>
-        <div class="term" id="term-${c.host}"></div>`;
+        <div class="term"></div>`;
       $("#runningList").appendChild(el);
     }
-    $("#rh-"+c.host).textContent=c.host;
+    const q=sel=>el.querySelector(sel);
+    q(".rh").textContent=c.host;
     const verb = (L.kind === "restore") ? "restoring" : "backing up";
-    const badge=$("#rb-"+c.host); badge.textContent=L.paused?"paused":verb; badge.className="badge "+(L.paused?"b-warn":"b-ok");
-    const f=$("#rf-"+c.host); f.style.width=pct+"%"; f.style.opacity=L.paused?0.5:1;
-    $("#rp-"+c.host).textContent=pct+"%";
-    $("#rfl-"+c.host).textContent=(p.files_done||0)+" / "+(p.total_files||0);
-    $("#rby-"+c.host).textContent=hBytes(p.bytes_done)+" / "+hBytes(p.total_bytes);
-    $("#rel-"+c.host).textContent=hDur(p.seconds_elapsed);
-    $("#ret-"+c.host).textContent=p.seconds_remaining>0?hDur(p.seconds_remaining):"—";
-    $("#rpause-"+c.host).style.display=L.paused?"none":"";
-    $("#rresume-"+c.host).style.display=L.paused?"":"none";
-    paintTerm(c.host, L.activity||[]);
+    const badge=q(".rb"); badge.textContent=L.paused?"paused":verb; badge.className="badge rb "+(L.paused?"b-warn":"b-ok");
+    const f=q(".rf"); f.style.width=pct+"%"; f.style.opacity=L.paused?0.5:1;
+    q(".rp").textContent=pct+"%";
+    q(".rfl").textContent=(p.files_done||0)+" / "+(p.total_files||0);
+    q(".rby").textContent=hBytes(p.bytes_done)+" / "+hBytes(p.total_bytes);
+    q(".rel").textContent=hDur(p.seconds_elapsed);
+    q(".ret").textContent=p.seconds_remaining>0?hDur(p.seconds_remaining):"—";
+    q(".rpause").style.display=L.paused?"none":"";
+    q(".rresume").style.display=L.paused?"":"none";
+    paintTerm(q(".term"), L.activity||[]);
   });
   // remove panels for hosts no longer running
   [...$("#runningList").children].forEach(el=>{ const h=el.id.slice(3); if(!have.has(h)) el.remove(); });
