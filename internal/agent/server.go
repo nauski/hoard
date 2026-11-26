@@ -89,6 +89,10 @@ type statusResponse struct {
 	// are local patterns left out because they could reach a required path.
 	Effective       *Config  `json:"effective,omitempty"`
 	IgnoredExcludes []string `json:"ignored_excludes,omitempty"`
+	// The server's offsite storages and the ids it assigns to this host; null
+	// until the server has been reached.
+	OffsiteStorages []OffsiteStorage `json:"offsite_storages"`
+	OffsiteServer   []string         `json:"offsite_server"`
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +106,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		Live:    s.agent.Live(),
 		Now:     now,
 	}
+	resp.OffsiteStorages, resp.OffsiteServer = s.agent.Offsite()
 	if c := s.agent.GetConfig(); c.RemoteManagement && c.Managed != nil {
 		eff, ignored := s.agent.Effective()
 		resp.Effective, resp.IgnoredExcludes = &eff, ignored

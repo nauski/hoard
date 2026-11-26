@@ -185,6 +185,11 @@
   </div>
 
   <div class="card">
+    <h2>Offsite storage<span class="help" tabindex="0" data-tip="Extra places the server copies this machine's backups to. The server may require some of them; tick more to add your own.">ⓘ</span></h2>
+    <div id="offsite" class="list"><div class="sub">The server has not been reached yet.</div></div>
+  </div>
+
+  <div class="card">
     <h2>What to back up<span class="help" tabindex="0" data-tip="Folders and files on this machine to include in backups. Use the folder picker to add them.">ⓘ</span></h2>
     <div id="paths" class="list"></div>
     <div class="bar" style="margin-top:6px">
@@ -385,6 +390,7 @@ async function save(){
     schedule:$("#sched").value.trim(), paths:readList("paths"), excludes:readList("excludes"),
     limit_upload_kibps:(parseInt($("#limUp").value,10)||0), limit_download_kibps:(parseInt($("#limDown").value,10)||0),
     notify_desktop: $("#notify").checked };
+  if(offKey!==null) body.offsite=[...document.querySelectorAll("#offsite input:checked:not(:disabled)")].map(i=>i.value);
   const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   let err="save failed";
   if(!r.ok){ try{ err=(await r.json()).error||err; }catch(e){} }
@@ -412,6 +418,22 @@ function actionClass(line){
   if(line.startsWith("—"))return"a-meta"; return"";
 }
 function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+// Offsite storage checkboxes. Redrawn only when the server's list changes, so a
+// tick the user has not saved yet survives the 5s status refresh.
+let offKey=null;
+function renderOffsite(st){
+  const stores=st.offsite_storages, srv=st.offsite_server||[], box=$("#offsite");
+  const key=JSON.stringify([stores,srv]);
+  if(stores===null||stores===undefined||key===offKey) return;
+  const mine=new Set(offKey===null?((st.config&&st.config.offsite)||[]):[...box.querySelectorAll("input:checked:not(:disabled)")].map(i=>i.value));
+  offKey=key;
+  if(!stores.length){ box.innerHTML='<div class="sub">The server has no offsite storage.</div>'; return; }
+  box.innerHTML=stores.map(o=>{
+    const req=srv.includes(o.id), on=req||mine.has(o.id);
+    return '<label class="check"><input type="checkbox" value="'+esc(o.id).replace(/"/g,"&quot;")+'"'+(on?" checked":"")+(req?" disabled":"")+' /> '+esc(o.label)
+      +(req?' <span class="sub">required by the server</span>':'')+'</label>';
+  }).join("");
+}
 function renderLive(live){
   const card=$("#progressCard");
   if(!live || !live.running){ card.style.display="none"; return; }
@@ -463,6 +485,7 @@ async function refresh(){
     else { run.textContent="idle"; run.className="badge b-idle"; }
     $("#now").disabled=running; $("#pinNow").disabled=running;
     renderLive(live);
+    renderOffsite(st);
     $("#next").textContent = st.next_run ? "next run "+fmt(st.next_run) : "";
     const mg=st.config&&st.config.remote_management&&st.config.managed, box=$("#managedBox");
     if(mg){

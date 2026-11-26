@@ -89,6 +89,16 @@ type Config struct {
 	// NotifyDesktop controls whether desktop notifications are sent on backup completion.
 	// Defaults to enabled (nil or true).
 	NotifyDesktop *bool `json:"notify_desktop,omitempty"`
+	// Offsite lists the ids of offsite storages this machine asks the server to
+	// mirror it to, on top of the ones the server picks. It is this machine's
+	// own choice and is never part of the server's managed settings.
+	Offsite []string `json:"offsite,omitempty"`
+}
+
+// OffsiteStorage is an offsite storage the server offers, by id and label.
+type OffsiteStorage struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 // Agent owns config persistence, the restic client, and run state.
@@ -107,6 +117,11 @@ type Agent struct {
 	lastStart time.Time        // when the most recent backup started (persisted in state.json)
 	boot      time.Time        // when this process loaded; see nextRun
 	progress  *restic.Progress // live progress while running, nil when idle
+
+	// Last offsite storage list the server sent, and the ids it assigns to this
+	// host (persisted in state.json). Nil until the server was reached.
+	offsiteStorages []OffsiteStorage
+	offsiteServer   []string
 
 	// live control/observation state for the running backup
 	cancel      context.CancelFunc
@@ -575,6 +590,9 @@ type serverReply struct {
 		SettingsJSON string `json:"settings_json"`
 		MAC          string `json:"mac"`
 	} `json:"config"`
+	// Sent on check-ins; null when empty.
+	OffsiteStorages []OffsiteStorage `json:"offsite_storages"`
+	OffsiteServer   []string         `json:"offsite_server"`
 }
 
 // report POSTs one live snapshot (and, on the final report, the completed
@@ -585,7 +603,9 @@ func (a *Agent) report(client *http.Client, base string, live *Live, outcome *re
 
 // reportFull is report with extra payload fields and the whole reply.
 func (a *Agent) reportFull(client *http.Client, base string, live *Live, outcome *reportOutcome, extra map[string]any) serverReply {
-	payload := map[string]any{"host": a.Host(), "live": live}
+	// "offsite" is always sent, [] included, so a wish can be withdrawn.
+	wish := append([]string{}, a.GetConfig().Offsite...)
+	payload := map[string]any{"host": a.Host(), "live": live, "offsite": wish}
 	if outcome != nil {
 		payload["last_result"] = outcome
 	}
@@ -611,7 +631,41 @@ func (a *Agent) reportFull(client *http.Client, base string, live *Live, outcome
 	defer resp.Body.Close()
 	var out serverReply
 	_ = json.NewDecoder(resp.Body).Decode(&out)
+	a.keepOffsite(out)
 	return out
+}
+
+// keepOffsite remembers the offsite lists of a check-in reply. Replies to other
+// reports do not carry them (decoded as nil on both) and change nothing; on a
+// check-in the server always sends the storage list, so an empty list is real.
+func (a *Agent) keepOffsite(r serverReply) {
+	if r.OffsiteStorages == nil && r.OffsiteServer == nil {
+		return
+	}
+	a.mu.Lock()
+	a.setOffsiteLocked(r.OffsiteStorages, r.OffsiteServer)
+	a.mu.Unlock()
+	a.saveState()
+}
+
+// setOffsiteLocked stores the lists as non-nil, so "known and empty" differs
+// from "never reached the server".
+func (a *Agent) setOffsiteLocked(stores []OffsiteStorage, server []string) {
+	if stores == nil {
+		stores = []OffsiteStorage{}
+	}
+	if server == nil {
+		server = []string{}
+	}
+	a.offsiteStorages, a.offsiteServer = stores, server
+}
+
+// Offsite returns the last offsite storage list from the server and the ids it
+// assigns to this host; both nil until the server has been reached.
+func (a *Agent) Offsite() ([]OffsiteStorage, []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.offsiteStorages, a.offsiteServer
 }
 
 // Ls lists one directory level inside a snapshot on the server (hot repo).
@@ -1174,7 +1228,11 @@ func (a *Agent) persist() error {
 func (a *Agent) statePath() string { return filepath.Join(filepath.Dir(a.cfgPath), "state.json") }
 
 type agentState struct {
-	LastBackupStart time.Time `json:"last_backup_start"`
+	LastBackupStart time.Time        `json:"last_backup_start"`
+	OffsiteStorages []OffsiteStorage `json:"offsite_storages,omitempty"`
+	OffsiteServer   []string         `json:"offsite_server,omitempty"`
+	// OffsiteKnown tells an empty storage list from "never reached the server".
+	OffsiteKnown bool `json:"offsite_known,omitempty"`
 }
 
 // loadLastStart reads state.json; a missing or unreadable file means "never".
@@ -1186,16 +1244,28 @@ func (a *Agent) loadLastStart() {
 	var s agentState
 	if json.Unmarshal(raw, &s) == nil {
 		a.lastStart = s.LastBackupStart
+		if s.OffsiteKnown {
+			a.setOffsiteLocked(s.OffsiteStorages, s.OffsiteServer)
+		}
 	}
 }
 
 // saveLastStart records when a backup started, in memory and in state.json.
-// A write failure only costs catch-up after a restart, so it is logged.
 func (a *Agent) saveLastStart(t time.Time) {
 	a.mu.Lock()
 	a.lastStart = t
 	a.mu.Unlock()
-	raw, _ := json.Marshal(agentState{LastBackupStart: t})
+	a.saveState()
+}
+
+// saveState writes state.json from the in-memory state. A write failure only
+// costs catch-up and the cached offsite list after a restart, so it is logged.
+func (a *Agent) saveState() {
+	a.mu.Lock()
+	st := agentState{LastBackupStart: a.lastStart, OffsiteStorages: a.offsiteStorages,
+		OffsiteServer: a.offsiteServer, OffsiteKnown: a.offsiteStorages != nil}
+	a.mu.Unlock()
+	raw, _ := json.Marshal(st)
 	_ = os.MkdirAll(filepath.Dir(a.statePath()), 0o700)
 	tmp := a.statePath() + ".tmp"
 	err := os.WriteFile(tmp, raw, 0o600)
