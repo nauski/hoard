@@ -27,6 +27,13 @@ type Config struct {
 	// Cold is the offsite IDrive e2 (S3) repository the hot repo is mirrored to.
 	Cold Repo `json:"cold"`
 
+	// Offsite are the labelled offsite storages hot snapshots are mirrored to.
+	Offsite []Offsite `json:"offsite,omitempty"`
+
+	// Routing maps a host to the storage ids it is mirrored to. A host without
+	// an entry goes to every Default storage; an empty list means none.
+	Routing map[string][]string `json:"routing,omitempty"`
+
 	// Schedule controls when the recurring jobs run.
 	Schedule Schedule `json:"schedule"`
 
@@ -328,6 +335,7 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	c.applyEnv()
+	c.migrateOffsite()
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -359,6 +367,18 @@ func (c *Config) applyEnv() {
 	if c.Cold.S3SecretAccessKey == "" {
 		c.Cold.S3SecretAccessKey = os.Getenv("HOARD_COLD_S3_SECRET_ACCESS_KEY")
 	}
+	if len(c.Offsite) > 0 {
+		o := &c.Offsite[0]
+		if o.Password == "" {
+			o.Password = os.Getenv("HOARD_COLD_PASSWORD")
+		}
+		if o.S3AccessKeyID == "" {
+			o.S3AccessKeyID = os.Getenv("HOARD_COLD_S3_ACCESS_KEY_ID")
+		}
+		if o.S3SecretAccessKey == "" {
+			o.S3SecretAccessKey = os.Getenv("HOARD_COLD_S3_SECRET_ACCESS_KEY")
+		}
+	}
 	if c.Alert.WebhookURL == "" {
 		c.Alert.WebhookURL = os.Getenv("HOARD_ALERT_WEBHOOK_URL")
 	}
@@ -372,8 +392,15 @@ func (c *Config) validate() error {
 	if c.Hot.Repository == "" {
 		return fmt.Errorf("hot.repository is required (the local repo clients push to)")
 	}
-	if c.Cold.Repository == "" {
-		return fmt.Errorf("cold.repository is required (the e2/S3 offsite repo)")
+	ids, labels := map[string]bool{}, map[string]bool{}
+	for _, o := range c.Offsite {
+		if o.ID == "" || ids[o.ID] {
+			return fmt.Errorf("offsite storage id %q is empty or duplicated", o.ID)
+		}
+		if o.Label == "" || labels[o.Label] {
+			return fmt.Errorf("offsite storage label %q is empty or duplicated", o.Label)
+		}
+		ids[o.ID], labels[o.Label] = true, true
 	}
 	return nil
 }

@@ -18,13 +18,23 @@ type JobResult struct {
 	OK        bool      `json:"ok"`
 	Message   string    `json:"message"`
 	Output    string    `json:"output,omitempty"`
+	Target    string    `json:"target,omitempty"` // offsite storage id; "" for hot/server jobs
+}
+
+// JobKey is the LastByJob key: job, or job@target for a per-storage job.
+func JobKey(job, target string) string {
+	if target == "" {
+		return job
+	}
+	return job + "@" + target
 }
 
 // SizeSample records a repo-size measurement at a point in time.
 type SizeSample struct {
-	At         time.Time `json:"at"`
-	HotStored  int64     `json:"hot_stored"`
-	ColdStored int64     `json:"cold_stored"`
+	At         time.Time        `json:"at"`
+	HotStored  int64            `json:"hot_stored"`
+	ColdStored int64            `json:"cold_stored"`
+	Offsite    map[string]int64 `json:"offsite,omitempty"`
 }
 
 // Outcome is the result of a client's most recent backup run (report-derived).
@@ -98,6 +108,8 @@ type ClientInfo struct {
 	// IgnoredExcludes are the client's own exclude patterns it is not applying
 	// because they could reach a server-required path.
 	IgnoredExcludes []string `json:"ignored_excludes,omitempty"`
+	// OffsiteWish are extra offsite storage ids the client asks for.
+	OffsiteWish []string `json:"offsite_wish,omitempty"`
 }
 
 // Store is the persisted, concurrency-safe application state.
@@ -149,7 +161,7 @@ func (s *Store) RecordJob(r JobResult) {
 	if len(s.History) > 200 {
 		s.History = s.History[len(s.History)-200:]
 	}
-	s.LastByJob[r.Job] = r
+	s.LastByJob[JobKey(r.Job, r.Target)] = r
 	s.save()
 }
 
