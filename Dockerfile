@@ -28,8 +28,9 @@ RUN set -eux; \
     restic version; rest-server --version || true
 
 FROM debian:bookworm-slim
+# openssh-client: restic talks to an sftp: offsite repo through the ssh binary.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
+ && apt-get install -y --no-install-recommends ca-certificates tini openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/hoardd /usr/local/bin/hoardd

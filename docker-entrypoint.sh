@@ -30,6 +30,14 @@ fi
 
 mkdir -p "$HOT_DIR"
 
+# SFTP offsite storage (e.g. a Hetzner Storage Box): restic runs ssh as root, so
+# the key, known_hosts and optional config kept in <data>/ssh become ~/.ssh.
+SSH_DIR="$(dirname "$HOT_DIR")/ssh"
+if [ -d "$SSH_DIR" ]; then
+  rm -rf /root/.ssh
+  ln -s "$SSH_DIR" /root/.ssh
+fi
+
 # rest-server serves every repo under --path; clients target http://host:8000/hot
 echo "[entrypoint] starting rest-server on ${REST_ADDR} (path=${REST_PATH})"
 rest-server --listen "${REST_ADDR}" --path "${REST_PATH}" ${REST_OPTS} &
